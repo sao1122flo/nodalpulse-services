@@ -24,6 +24,12 @@ _F_SEARCH_BTN = "ctl00$ContentPlaceHolder1$btnSearch"
 
 _CHICAGO = ZoneInfo("America/Chicago")
 
+# Patterns that indicate ASP.NET returned a session-expired page with 200 OK
+_SESSION_EXPIRED_RE = re.compile(
+    r"session.{0,30}(expired|timed.?out)|please.{0,30}return|your session",
+    re.IGNORECASE,
+)
+
 # PUCT filing type label → taxonomy doc-type tag
 _DOC_TYPE_MAP: dict[str, str] = {
     "order": "puct-order",
@@ -57,7 +63,7 @@ class PuctCrawler(BaseCrawler):
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=30,
-            verify=False,  # PUCT uses a gov CA not in standard bundles
+            verify=False,  # PUCT uses a gov CA absent from standard bundles
             headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
         ) as client:
             rows = await self._search(client, since_date, until_date)
@@ -91,17 +97,30 @@ class PuctCrawler(BaseCrawler):
         since: date,
         until: date,
     ) -> list[dict]:
-        # Re-fetch viewstate immediately before each POST — ASP.NET sessions expire
-        viewstate = await self._get_viewstate(client)
-        payload = {
-            **viewstate,
-            _F_FILED_FROM: since.strftime("%m/%d/%Y"),
-            _F_FILED_TO: until.strftime("%m/%d/%Y"),
-            _F_SEARCH_BTN: "Search",
-        }
-        resp = await client.post(SEARCH_URL, data=payload)
-        resp.raise_for_status()
-        return _parse_results(resp.text)
+        for attempt in range(2):
+            # Re-fetch viewstate immediately before every POST — ASP.NET sessions expire
+            # and __EVENTVALIDATION gates POST acceptance alongside __VIEWSTATE
+            viewstate = await self._get_viewstate(client)
+            payload = {
+                **viewstate,
+                _F_FILED_FROM: since.strftime("%m/%d/%Y"),
+                _F_FILED_TO: until.strftime("%m/%d/%Y"),
+                _F_SEARCH_BTN: "Search",
+            }
+            resp = await client.post(SEARCH_URL, data=payload)
+            resp.raise_for_status()
+
+            # PUCT returns 200 with a session-expired HTML page instead of 401/403
+            if _SESSION_EXPIRED_RE.search(resp.text[:2000]):
+                if attempt == 0:
+                    logger.warning("PUCT: session expired (200 OK with expired page), re-warming")
+                    continue
+                logger.error("PUCT: session expired after re-warm — returning empty result")
+                return []
+
+            return _parse_results(resp.text)
+
+        return []
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
     async def _download_filing(self, client: httpx.AsyncClient, row: dict) -> RawFiling | None:
@@ -122,11 +141,22 @@ class PuctCrawler(BaseCrawler):
             filed_at=row["filed_at"],
             content=resp.content,
             file_ext=file_ext,
-            metadata={"docket": row.get("docket", ""), "filer": row.get("filer", "")},
+            metadata={
+                "docket": row.get("docket", ""),
+                "filer": row.get("filer", ""),
+                "volume_index": row.get("volume_index", 0),
+                "volume_total": row.get("volume_total", 1),
+            },
         )
 
 
 # ── parsing helpers ───────────────────────────────────────────────────────────
+
+
+def _cell_text(cell) -> str:
+    """Normalize cell text: collapse \xa0 and internal whitespace."""
+    raw = cell.text(strip=True).replace("\xa0", " ")
+    return re.sub(r"\s+", " ", raw).strip()
 
 
 def _input_val(tree: HTMLParser, name: str) -> str:
@@ -151,64 +181,74 @@ def _parse_results(html: str) -> list[dict]:
         cells = tr.css("td")
         if len(cells) < 4:
             continue
-        row = _parse_row(cells)
-        if row:
-            results.append(row)
+        rows = _parse_row(cells)
+        results.extend(rows)
     return results
 
 
-def _parse_row(cells) -> dict | None:
+def _parse_row(cells) -> list[dict]:
     """
     Expected PUCT Interchange column order:
       0: Project/Docket number
       1: Filed date (MM/DD/YYYY, Central time)
       2: Filing type / description
       3: Filer name
-      4+: Document link(s)
+      4+: Document link(s) — may include multiple volumes
+
+    Returns one dict per document link (multi-volume filings produce multiple entries).
     """
     try:
-        docket = cells[0].text(strip=True)
-        filed_raw = cells[1].text(strip=True)
-        filing_type_raw = cells[2].text(strip=True)
-        filer = cells[3].text(strip=True) if len(cells) > 3 else ""
+        docket = _cell_text(cells[0])
+        filed_raw = _cell_text(cells[1])
+        filing_type_raw = _cell_text(cells[2])
+        filer = _cell_text(cells[3]) if len(cells) > 3 else ""
 
-        doc_url: str | None = None
-        external_id: str | None = None
+        # Collect ALL document links — PUCT splits multi-volume filings across siblings
+        # urljoin handles both /relative and https://absolute hrefs correctly
+        doc_links: list[tuple[str, str]] = []
         for cell in cells[4:]:
-            anchor = cell.css_first("a[href]")
-            if anchor:
-                href = anchor.attributes["href"]
-                # urljoin handles both relative /path and absolute https:// hrefs
+            for anchor in cell.css("a[href]"):
+                href = anchor.attributes.get("href", "")
+                if not href:
+                    continue
                 doc_url = urljoin(BASE_URL, href)
                 m = re.search(r"[Dd]ocument[_]?[Ii][Dd]=(\d+)", href)
                 external_id = m.group(1) if m else re.sub(r"\W+", "-", href)[-64:]
-                break
+                doc_links.append((doc_url, external_id))
 
-        if not doc_url:
-            return None
+        if not doc_links:
+            return []
 
         filed_at = _parse_date(filed_raw)
         if not filed_at:
-            return None
+            return []
 
         type_lower = filing_type_raw.lower()
         doc_type = next((v for k, v in _DOC_TYPE_MAP.items() if k in type_lower), "puct-filing")
 
         # Normalize docket: PUCT strips leading zeros inconsistently — store without them
-        docket_normalized = str(int(docket)) if docket.isdigit() else docket
+        docket_norm = str(int(docket)) if docket.isdigit() else docket
 
-        return {
-            "docket": docket_normalized,
-            "external_id": external_id or docket_normalized,
-            "filed_at": filed_at,
-            "doc_type": doc_type,
-            "title": f"{filing_type_raw} — {docket_normalized}" if docket_normalized else filing_type_raw,
-            "filer": filer,
-            "doc_url": doc_url,
-        }
+        total_vols = len(doc_links)
+        rows = []
+        for i, (doc_url, external_id) in enumerate(doc_links):
+            vol_suffix = f" (Vol. {i + 1} of {total_vols})" if total_vols > 1 else ""
+            rows.append({
+                "docket": docket_norm,
+                "external_id": external_id,
+                "filed_at": filed_at,
+                "doc_type": doc_type,
+                "title": f"{filing_type_raw} — {docket_norm}{vol_suffix}" if docket_norm else f"{filing_type_raw}{vol_suffix}",
+                "filer": filer,
+                "doc_url": doc_url,
+                "volume_index": i,
+                "volume_total": total_vols,
+            })
+        return rows
+
     except Exception:
         logger.debug("Failed to parse row", exc_info=True)
-        return None
+        return []
 
 
 def _parse_date(raw: str) -> str | None:
