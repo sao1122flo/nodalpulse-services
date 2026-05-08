@@ -32,7 +32,7 @@ async def enqueue(kind: str, payload: dict[str, Any], priority: int = 0) -> str:
         return job_id
 
 
-async def dequeue(kind: str, lock_seconds: int = 60) -> dict[str, Any] | None:
+async def dequeue(kind: str, lock_seconds: int = 900) -> dict[str, Any] | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text(
@@ -46,8 +46,10 @@ async def dequeue(kind: str, lock_seconds: int = 60) -> dict[str, Any] | None:
                 WHERE id = (
                     SELECT id FROM jobs
                     WHERE kind = :kind
-                      AND status = 'pending'
-                      AND run_after <= NOW()
+                      AND (
+                          (status = 'pending' AND run_after <= NOW())
+                          OR (status = 'running' AND locked_until < NOW())
+                      )
                     ORDER BY priority DESC, run_after ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
@@ -80,7 +82,7 @@ async def complete(job_id: str, output: dict[str, Any], duration_ms: int) -> Non
         await session.commit()
 
 
-async def fail(job_id: str, error: str, duration_ms: int, max_attempts: int = 3) -> None:
+async def fail(job_id: str, error: str, duration_ms: int, max_attempts: int = 5) -> None:
     async with AsyncSessionLocal() as session:
         await session.execute(
             text(
