@@ -15,8 +15,8 @@ from nodalpulse.crawlers.base import BaseCrawler, RawFiling
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://interchange.puc.texas.gov"
-# PUCT redesigned from ASP.NET WebForms (/Apps/Filings/Home.aspx) to a modern app in 2025
-SEARCH_URL = f"{BASE_URL}/search/filings/"
+# /search/filings/ is the JS SPA form page; /Search/Filings is the server-rendered results endpoint
+SEARCH_URL = f"{BASE_URL}/Search/Filings"
 
 _CHICAGO = ZoneInfo("America/Chicago")
 
@@ -77,8 +77,8 @@ class PuctCrawler(BaseCrawler):
         since: date,
         until: date,
     ) -> list[dict]:
-        # New PUCT Interchange uses GET with query params (no ViewState/POST).
-        # Date param names discovered by inspecting the live search form — update if PUCT changes them.
+        # /Search/Filings is the server-rendered results endpoint; ControlNumber searches confirmed
+        # working from Google cache. Date param names are best-guess — logged for verification.
         params = {
             "FiledFrom": since.strftime("%m/%d/%Y"),
             "FiledTo": until.strftime("%m/%d/%Y"),
@@ -88,7 +88,6 @@ class PuctCrawler(BaseCrawler):
         }
         resp = await client.get(SEARCH_URL, params=params)
         logger.info("PUCT search GET %s → %d", resp.url, resp.status_code)
-        # Log enough HTML to diagnose form field names / table structure if needed
         logger.info("PUCT response snippet: %s", resp.text[:4000])
         resp.raise_for_status()
         return _parse_results(resp.text)
