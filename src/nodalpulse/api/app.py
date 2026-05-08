@@ -58,6 +58,14 @@ _SPA_PATTERNS = [
 ]
 
 
+def _snapshot_cookies(client: httpx.AsyncClient) -> list[dict]:
+    """Return current cookie jar as a list of {name, domain, path} dicts (no values)."""
+    return [
+        {"name": c.name, "domain": c.domain, "path": c.path}
+        for c in client.cookies.jar
+    ]
+
+
 def _dump_form_inputs(tree: HTMLParser) -> tuple[list[dict], list[dict]]:
     """Return (inputs, form_actions) from a parsed page — skips ASP.NET __ fields."""
     inputs = []
@@ -106,6 +114,7 @@ async def discover_puct() -> JSONResponse:
     ) as client:
         # 1. Fetch the search form page — extract form inputs to learn accepted param names
         r = await client.get(f"{_PUCT_BASE}/search/filings/")
+        cookies_after_shell = _snapshot_cookies(client)
         tree = HTMLParser(r.text)
 
         spa_found = [p for p in _SPA_PATTERNS if re.search(re.escape(p), r.text)]
@@ -143,6 +152,7 @@ async def discover_puct() -> JSONResponse:
 
         # 3. Fetch a known-working ControlNumber page — inspect table structure and form inputs
         known = await client.get(f"{_PUCT_BASE}/Search/Filings?ControlNumber=56896")
+        cookies_after_known = _snapshot_cookies(client)
         known_tree = HTMLParser(known.text)
         table_headers = _dump_table_headers(known_tree)
         known_form_inputs, known_form_actions = _dump_form_inputs(known_tree)
@@ -209,4 +219,6 @@ async def discover_puct() -> JSONResponse:
         "known_url_form_actions": known_form_actions,
         "date_param_probes": list(date_probes),
         "pagesize_probes": list(pagesize_probes),
+        "cookies_after_shell": cookies_after_shell,
+        "cookies_after_known_url": cookies_after_known,
     })
