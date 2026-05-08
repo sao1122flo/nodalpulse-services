@@ -31,3 +31,11 @@ def upload(key: str, body: bytes, content_type: str = "application/octet-stream"
 def download(key: str) -> bytes:
     resp = get_client().get_object(Bucket=settings.r2_bucket, Key=key)
     return resp["Body"].read()
+
+
+def exists(key: str) -> bool:
+    try:
+        get_client().head_object(Bucket=settings.r2_bucket, Key=key)
+        return True
+    except Exception:
+        return False
