@@ -5,6 +5,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urljoin
 
+import certifi
 import httpx
 from selectolax.parser import HTMLParser
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -54,6 +55,7 @@ class PuctCrawler(BaseCrawler):
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=30,
+            verify=certifi.where(),
             headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
         ) as client:
             viewstate = await self._get_viewstate(client)

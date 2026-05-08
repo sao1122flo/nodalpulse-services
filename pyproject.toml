@@ -16,6 +16,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "boto3>=1.43.6",
     "fastapi>=0.136.1",
+    "certifi>=2024.1.0",
     "httpx>=0.28.1",
     "pdfplumber>=0.11.9",
     "pgvector>=0.4.2",
