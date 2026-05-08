@@ -59,6 +59,11 @@ class PuctCrawler(BaseCrawler):
     source_slug = "puct"
 
     async def fetch_new(self, since: str | None = None) -> list[RawFiling]:
+        # Kept for interface compliance; handler uses get_rows() + per-file download instead.
+        raise NotImplementedError("Use get_rows() + _download_filing() to avoid OOM")
+
+    async def get_rows(self, since: str | None = None) -> list[dict]:
+        """L1+L2+dedup+L3: return rows with doc_url resolved, no content downloaded."""
         since_date = date.fromisoformat(since) if since else date.today() - timedelta(days=1)
         until_date = date.today()
         logger.info("PUCT crawl: %s → %s", since_date, until_date)
@@ -69,11 +74,9 @@ class PuctCrawler(BaseCrawler):
             verify=False,
             headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
         ) as client:
-            # L1 + L2: dockets → filing items
             all_items = await self._fetch_filing_items(client, since_date, until_date)
             logger.info("PUCT: %d filing items in range", len(all_items))
 
-            # Dedup: skip L3 for items already in DB
             source_id = await get_source_id(self.source_slug)
             if source_id and all_items:
                 item_keys = [i["item_key"] for i in all_items]
@@ -83,23 +86,9 @@ class PuctCrawler(BaseCrawler):
             else:
                 new_items = all_items
 
-            # L3: resolve document URLs only for new items
             rows = await self._fetch_document_urls(client, new_items)
-            logger.info("PUCT: %d documents to download", len(rows))
-
-            sem = asyncio.Semaphore(_CONCURRENCY)
-
-            async def _fetch_one(row: dict) -> RawFiling | None:
-                async with sem:
-                    try:
-                        return await self._download_filing(client, row)
-                    except Exception:
-                        logger.exception("Failed to download %s", row.get("external_id", "?"))
-                        return None
-
-            results = [r for r in await asyncio.gather(*[_fetch_one(r) for r in rows]) if r is not None]
-            logger.info("PUCT: downloaded %d/%d", len(results), len(rows))
-            return results
+            logger.info("PUCT: %d documents to process", len(rows))
+            return rows
 
     async def _fetch_filing_items(
         self, client: httpx.AsyncClient, since: date, until: date
