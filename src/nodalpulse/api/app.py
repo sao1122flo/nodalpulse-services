@@ -101,40 +101,39 @@ async def discover_puct() -> JSONResponse:
 
         probes = await asyncio.gather(*[_probe(p) for p in _API_CANDIDATES])
 
-    # 3. Fetch a known-working ControlNumber page to inspect table structure
-    known = await client.get(f"{_PUCT_BASE}/Search/Filings?ControlNumber=56896")
-    known_tree = HTMLParser(known.text)
-    tables = [
-        {"id": t.attrs.get("id", ""), "class": t.attrs.get("class", ""), "rows": len(t.css("tr"))}
-        for t in known_tree.css("table")
-    ]
-    # Also grab first 300 chars of any table with rows
-    table_samples = []
-    for t in known_tree.css("table"):
-        if len(t.css("tr")) > 1:
-            table_samples.append({"id": t.attrs.get("id", ""), "html": t.html[:500]})
+        # 3. Fetch a known-working ControlNumber page to inspect table structure
+        known = await client.get(f"{_PUCT_BASE}/Search/Filings?ControlNumber=56896")
+        known_tree = HTMLParser(known.text)
+        tables = [
+            {"id": t.attrs.get("id", ""), "class": t.attrs.get("class", ""), "rows": len(t.css("tr"))}
+            for t in known_tree.css("table")
+        ]
+        table_samples = []
+        for t in known_tree.css("table"):
+            if len(t.css("tr")) > 1:
+                table_samples.append({"id": t.attrs.get("id", ""), "html": t.html[:500]})
 
-    # 4. Try date search with various param name candidates
-    date_param_guesses = [
-        {"FiledFrom": "05/06/2026", "FiledTo": "05/08/2026"},
-        {"FilingDateFrom": "05/06/2026", "FilingDateTo": "05/08/2026"},
-        {"DateFrom": "05/06/2026", "DateTo": "05/08/2026"},
-        {"StartDate": "05/06/2026", "EndDate": "05/08/2026"},
-    ]
+        # 4. Try date search with various param name candidates
+        date_param_guesses = [
+            {"FiledFrom": "05/06/2026", "FiledTo": "05/08/2026"},
+            {"FilingDateFrom": "05/06/2026", "FilingDateTo": "05/08/2026"},
+            {"DateFrom": "05/06/2026", "DateTo": "05/08/2026"},
+            {"StartDate": "05/06/2026", "EndDate": "05/08/2026"},
+        ]
 
-    async def _try_date_params(params: dict) -> dict:
-        resp = await client.get(f"{_PUCT_BASE}/Search/Filings", params=params)
-        t = HTMLParser(resp.text)
-        tbls = t.css("table")
-        return {
-            "params": params,
-            "status": resp.status_code,
-            "tables_found": len(tbls),
-            "table_ids": [tbl.attrs.get("id", "") for tbl in tbls],
-            "snippet": resp.text[2000:3000],
-        }
+        async def _try_date_params(params: dict) -> dict:
+            resp = await client.get(f"{_PUCT_BASE}/Search/Filings", params=params)
+            t = HTMLParser(resp.text)
+            tbls = t.css("table")
+            return {
+                "params": params,
+                "status": resp.status_code,
+                "tables_found": len(tbls),
+                "table_ids": [tbl.attrs.get("id", "") for tbl in tbls],
+                "snippet": resp.text[2000:3000],
+            }
 
-    date_probes = await asyncio.gather(*[_try_date_params(p) for p in date_param_guesses])
+        date_probes = await asyncio.gather(*[_try_date_params(p) for p in date_param_guesses])
 
     return JSONResponse({
         "shell_status": r.status_code,
