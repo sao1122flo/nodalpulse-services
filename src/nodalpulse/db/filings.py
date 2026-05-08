@@ -29,7 +29,7 @@ async def get_existing_item_keys(source_id: str, item_keys: list[str]) -> set[st
             text("""
                 SELECT metadata->>'item_key'
                 FROM filings
-                WHERE source_id = :source_id::uuid
+                WHERE source_id = CAST(:source_id AS uuid)
                   AND metadata->>'item_key' = ANY(:item_keys)
             """),
             {"source_id": source_id, "item_keys": item_keys},
@@ -59,8 +59,8 @@ async def upsert_filing(raw: RawFiling, source_id: str, r2_key: str) -> str | No
                     source_id, external_id, doc_type, title, filer,
                     filed_at, r2_key, file_ext, source_url, metadata
                 ) VALUES (
-                    :source_id::uuid, :external_id, :doc_type, :title, :filer,
-                    :filed_at::timestamptz, :r2_key, :file_ext, :source_url, :metadata::jsonb
+                    CAST(:source_id AS uuid), :external_id, :doc_type, :title, :filer,
+                    CAST(:filed_at AS timestamptz), :r2_key, :file_ext, :source_url, CAST(:metadata AS jsonb)
                 )
                 ON CONFLICT (source_id, external_id) DO NOTHING
                 RETURNING id::text
