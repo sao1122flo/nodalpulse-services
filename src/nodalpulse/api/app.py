@@ -204,6 +204,25 @@ async def discover_puct() -> JSONResponse:
             asyncio.gather(*[_try_pagesize(s) for s in [10, 50, 100, 200]]),
         )
 
+        # 6. Targeted probe: correct endpoint + correct date format to see real data rows
+        search_resp = await client.get(
+            f"{_PUCT_BASE}/search/search/",
+            params={"DateFiledFrom": "2026-05-06", "DateFiledTo": "2026-05-08"},
+        )
+        search_tree = HTMLParser(search_resp.text)
+        search_table = search_tree.css_first("table")
+        data_row_samples = []
+        if search_table:
+            for tr in search_table.css("tr")[1:6]:  # first 5 data rows
+                data_row_samples.append({
+                    "html": tr.html,
+                    "links": [
+                        {"text": a.text(strip=True), "href": a.attrs.get("href", "")}
+                        for a in tr.css("a[href]")
+                    ],
+                    "cells": [td.text(strip=True) for td in tr.css("td")],
+                })
+
     return JSONResponse({
         "shell_status": r.status_code,
         "shell_length": len(r.text),
@@ -219,6 +238,13 @@ async def discover_puct() -> JSONResponse:
         "known_url_form_actions": known_form_actions,
         "date_param_probes": list(date_probes),
         "pagesize_probes": list(pagesize_probes),
+        "search_probe": {
+            "status": search_resp.status_code,
+            "url": str(search_resp.url),
+            "tables_found": 1 if search_table else 0,
+            "total_rows": len(search_table.css("tr")) if search_table else 0,
+            "data_row_samples": data_row_samples,
+        },
         "cookies_after_shell": cookies_after_shell,
         "cookies_after_known_url": cookies_after_known,
     })
