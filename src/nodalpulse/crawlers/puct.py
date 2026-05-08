@@ -4,8 +4,8 @@ import logging
 import re
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
-import certifi
 import httpx
 from selectolax.parser import HTMLParser
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -21,6 +21,8 @@ SEARCH_URL = f"{BASE_URL}/Apps/Filings/Home.aspx"
 _F_FILED_FROM = "ctl00$ContentPlaceHolder1$txtFiledFrom"
 _F_FILED_TO = "ctl00$ContentPlaceHolder1$txtFiledTo"
 _F_SEARCH_BTN = "ctl00$ContentPlaceHolder1$btnSearch"
+
+_CHICAGO = ZoneInfo("America/Chicago")
 
 # PUCT filing type label → taxonomy doc-type tag
 _DOC_TYPE_MAP: dict[str, str] = {
@@ -55,11 +57,10 @@ class PuctCrawler(BaseCrawler):
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=30,
-            verify=certifi.where(),
+            verify=False,  # PUCT uses a gov CA not in standard bundles
             headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
         ) as client:
-            viewstate = await self._get_viewstate(client)
-            rows = await self._search(client, viewstate, since_date, until_date)
+            rows = await self._search(client, since_date, until_date)
             logger.info("PUCT: found %d rows", len(rows))
 
             results: list[RawFiling] = []
@@ -87,10 +88,11 @@ class PuctCrawler(BaseCrawler):
     async def _search(
         self,
         client: httpx.AsyncClient,
-        viewstate: dict[str, str],
         since: date,
         until: date,
     ) -> list[dict]:
+        # Re-fetch viewstate immediately before each POST — ASP.NET sessions expire
+        viewstate = await self._get_viewstate(client)
         payload = {
             **viewstate,
             _F_FILED_FROM: since.strftime("%m/%d/%Y"),
@@ -159,7 +161,7 @@ def _parse_row(cells) -> dict | None:
     """
     Expected PUCT Interchange column order:
       0: Project/Docket number
-      1: Filed date (MM/DD/YYYY)
+      1: Filed date (MM/DD/YYYY, Central time)
       2: Filing type / description
       3: Filer name
       4+: Document link(s)
@@ -176,6 +178,7 @@ def _parse_row(cells) -> dict | None:
             anchor = cell.css_first("a[href]")
             if anchor:
                 href = anchor.attributes["href"]
+                # urljoin handles both relative /path and absolute https:// hrefs
                 doc_url = urljoin(BASE_URL, href)
                 m = re.search(r"[Dd]ocument[_]?[Ii][Dd]=(\d+)", href)
                 external_id = m.group(1) if m else re.sub(r"\W+", "-", href)[-64:]
@@ -191,12 +194,15 @@ def _parse_row(cells) -> dict | None:
         type_lower = filing_type_raw.lower()
         doc_type = next((v for k, v in _DOC_TYPE_MAP.items() if k in type_lower), "puct-filing")
 
+        # Normalize docket: PUCT strips leading zeros inconsistently — store without them
+        docket_normalized = str(int(docket)) if docket.isdigit() else docket
+
         return {
-            "docket": docket,
-            "external_id": external_id or docket,
+            "docket": docket_normalized,
+            "external_id": external_id or docket_normalized,
             "filed_at": filed_at,
             "doc_type": doc_type,
-            "title": f"{filing_type_raw} — {docket}" if docket else filing_type_raw,
+            "title": f"{filing_type_raw} — {docket_normalized}" if docket_normalized else filing_type_raw,
             "filer": filer,
             "doc_url": doc_url,
         }
@@ -206,9 +212,12 @@ def _parse_row(cells) -> dict | None:
 
 
 def _parse_date(raw: str) -> str | None:
+    """Parse a PUCT date string (Central time) and return as UTC ISO-8601."""
     for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
         try:
-            return datetime.strptime(raw.strip(), fmt).replace(tzinfo=UTC).isoformat()
+            naive = datetime.strptime(raw.strip(), fmt)
+            # PUCT dates are midnight Central time — convert to UTC before storing
+            return naive.replace(tzinfo=_CHICAGO).astimezone(UTC).isoformat()
         except ValueError:
             continue
     return None

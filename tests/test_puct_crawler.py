@@ -52,6 +52,7 @@ def test_parse_results_empty_table():
 
 
 def test_parse_date_formats():
-    assert _parse_date("05/06/2026") == "2026-05-06T00:00:00+00:00"
-    assert _parse_date("2026-05-06") == "2026-05-06T00:00:00+00:00"
+    # PUCT dates are midnight Central time; May is CDT (UTC-5)
+    assert _parse_date("05/06/2026") == "2026-05-06T05:00:00+00:00"
+    assert _parse_date("2026-05-06") == "2026-05-06T05:00:00+00:00"
     assert _parse_date("garbage") is None
