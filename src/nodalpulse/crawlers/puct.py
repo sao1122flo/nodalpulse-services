@@ -77,18 +77,9 @@ class PuctCrawler(BaseCrawler):
         since: date,
         until: date,
     ) -> list[dict]:
-        # /Search/Filings is the server-rendered results endpoint; ControlNumber searches confirmed
-        # working from Google cache. Date param names are best-guess — logged for verification.
-        params = {
-            "FiledFrom": since.strftime("%m/%d/%Y"),
-            "FiledTo": until.strftime("%m/%d/%Y"),
-            "DocumentType": "ALL",
-            "SortBy": "FileStamp",
-            "SortOrder": "Descending",
-        }
-        resp = await client.get(SEARCH_URL, params=params)
+        # Placeholder — real implementation pending API discovery
+        resp = await client.get(SEARCH_URL)
         logger.info("PUCT search GET %s → %d", resp.url, resp.status_code)
-        logger.info("PUCT response snippet: %s", resp.text[:4000])
         resp.raise_for_status()
         return _parse_results(resp.text)
 
