@@ -21,7 +21,7 @@ async def enqueue(kind: str, payload: dict[str, Any], priority: int = 0) -> str:
             text(
                 """
                 INSERT INTO jobs (kind, payload, priority)
-                VALUES (:kind, :payload::jsonb, :priority)
+                VALUES (:kind, CAST(:payload AS JSONB), :priority)
                 RETURNING id::text
                 """
             ),
@@ -40,7 +40,7 @@ async def dequeue(kind: str, lock_seconds: int = 60) -> dict[str, Any] | None:
                 UPDATE jobs SET
                     status = 'running',
                     locked_by = :worker_id,
-                    locked_until = NOW() + :lock_interval::interval,
+                    locked_until = NOW() + CAST(:lock_interval AS interval),
                     attempts = attempts + 1,
                     updated_at = NOW()
                 WHERE id = (
@@ -72,7 +72,7 @@ async def complete(job_id: str, output: dict[str, Any], duration_ms: int) -> Non
             text(
                 """
                 INSERT INTO job_results (job_id, attempt, success, output, duration_ms)
-                SELECT id, attempts, true, :output::jsonb, :duration_ms FROM jobs WHERE id=:id
+                SELECT id, attempts, true, CAST(:output AS JSONB), :duration_ms FROM jobs WHERE id=:id
                 """
             ),
             {"id": job_id, "output": json.dumps(output), "duration_ms": duration_ms},
@@ -101,7 +101,7 @@ async def fail(job_id: str, error: str, duration_ms: int, max_attempts: int = 3)
             text(
                 """
                 INSERT INTO job_results (job_id, attempt, success, output, duration_ms)
-                SELECT id, attempts, false, :output::jsonb, :duration_ms FROM jobs WHERE id=:id
+                SELECT id, attempts, false, CAST(:output AS JSONB), :duration_ms FROM jobs WHERE id=:id
                 """
             ),
             {"id": job_id, "output": json.dumps({"error": error}), "duration_ms": duration_ms},
