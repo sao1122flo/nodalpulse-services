@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 
 from sqlalchemy import text
 
@@ -71,7 +72,7 @@ async def upsert_filing(raw: RawFiling, source_id: str, r2_key: str) -> str | No
                 "doc_type": raw.doc_type,
                 "title": raw.title[:500],
                 "filer": raw.metadata.get("filer", "")[:500],
-                "filed_at": raw.filed_at,
+                "filed_at": datetime.fromisoformat(raw.filed_at),
                 "r2_key": r2_key,
                 "file_ext": raw.file_ext,
                 "source_url": raw.source_url,
