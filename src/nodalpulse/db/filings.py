@@ -20,6 +20,23 @@ async def get_source_id(slug: str) -> str | None:
         return result.scalar_one_or_none()
 
 
+async def get_existing_item_keys(source_id: str, item_keys: list[str]) -> set[str]:
+    """Return subset of item_keys already present in filings (metadata->>'item_key')."""
+    if not item_keys:
+        return set()
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT metadata->>'item_key'
+                FROM filings
+                WHERE source_id = :source_id::uuid
+                  AND metadata->>'item_key' = ANY(:item_keys)
+            """),
+            {"source_id": source_id, "item_keys": item_keys},
+        )
+        return {row[0] for row in result.fetchall() if row[0]}
+
+
 async def get_last_crawled_at(source_slug: str) -> str | None:
     """Return ISO date string of the newest filing we have for this source."""
     async with AsyncSessionLocal() as session:

@@ -1,5 +1,16 @@
-"""PUCT Interchange crawler — scrapes new filings by date range."""
+"""PUCT Interchange crawler — scrapes new filings by date range.
 
+Three-level architecture mirroring the new ASP.NET MVC site:
+  GET /search/search/    → redirects to /search/dockets/  (dockets active in range)
+  GET /search/filings/   (filing items per docket, date-filtered)
+  GET /search/documents/ (downloadable files per item)
+
+Dedup: after L1+L2 resolves (control_number, item_number) pairs, existing
+items are filtered out before L3 document-URL fetches fire — cuts ~95% of
+L3 requests on steady-state nightly runs.
+"""
+
+import asyncio
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -11,16 +22,18 @@ from selectolax.parser import HTMLParser
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from nodalpulse.crawlers.base import BaseCrawler, RawFiling
+from nodalpulse.db.filings import get_existing_item_keys, get_source_id
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://interchange.puc.texas.gov"
-# /search/filings/ is the JS SPA form page; /Search/Filings is the server-rendered results endpoint
-SEARCH_URL = f"{BASE_URL}/Search/Filings"
+SEARCH_URL = f"{BASE_URL}/search/search/"
+FILINGS_URL = f"{BASE_URL}/search/filings/"
+DOCUMENTS_URL = f"{BASE_URL}/search/documents/"
 
 _CHICAGO = ZoneInfo("America/Chicago")
+_CONCURRENCY = 5  # max parallel HTTP requests per crawl phase
 
-# PUCT filing type label → taxonomy doc-type tag
 _DOC_TYPE_MAP: dict[str, str] = {
     "order": "puct-order",
     "emergency order": "puct-order",
@@ -53,46 +66,102 @@ class PuctCrawler(BaseCrawler):
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=30,
-            verify=False,  # PUCT uses a gov CA absent from standard bundles
+            verify=False,
             headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
         ) as client:
-            rows = await self._search(client, since_date, until_date)
-            logger.info("PUCT: found %d rows", len(rows))
+            # L1 + L2: dockets → filing items
+            all_items = await self._fetch_filing_items(client, since_date, until_date)
+            logger.info("PUCT: %d filing items in range", len(all_items))
 
-            results: list[RawFiling] = []
-            for row in rows:
-                try:
-                    filing = await self._download_filing(client, row)
-                    if filing:
-                        results.append(filing)
-                except Exception:
-                    logger.exception("Failed to download filing %s", row.get("external_id", "?"))
+            # Dedup: skip L3 for items already in DB
+            source_id = await get_source_id(self.source_slug)
+            if source_id and all_items:
+                item_keys = [i["item_key"] for i in all_items]
+                existing = await get_existing_item_keys(source_id, item_keys)
+                new_items = [i for i in all_items if i["item_key"] not in existing]
+                logger.info("PUCT: %d new items (%d already in DB)", len(new_items), len(existing))
+            else:
+                new_items = all_items
 
+            # L3: resolve document URLs only for new items
+            rows = await self._fetch_document_urls(client, new_items)
+            logger.info("PUCT: %d documents to download", len(rows))
+
+            sem = asyncio.Semaphore(_CONCURRENCY)
+
+            async def _fetch_one(row: dict) -> RawFiling | None:
+                async with sem:
+                    try:
+                        return await self._download_filing(client, row)
+                    except Exception:
+                        logger.exception("Failed to download %s", row.get("external_id", "?"))
+                        return None
+
+            results = [r for r in await asyncio.gather(*[_fetch_one(r) for r in rows]) if r is not None]
             logger.info("PUCT: downloaded %d/%d", len(results), len(rows))
             return results
 
-    async def _search(
-        self,
-        client: httpx.AsyncClient,
-        since: date,
-        until: date,
+    async def _fetch_filing_items(
+        self, client: httpx.AsyncClient, since: date, until: date
     ) -> list[dict]:
-        # Placeholder — real implementation pending API discovery
-        resp = await client.get(SEARCH_URL)
-        logger.info("PUCT search GET %s → %d", resp.url, resp.status_code)
+        """L1: search → docket list. L2: per-docket filing items."""
+        resp = await client.get(SEARCH_URL, params={
+            "DateFiledFrom": since.isoformat(),
+            "DateFiledTo": until.isoformat(),
+        })
         resp.raise_for_status()
-        return _parse_results(resp.text)
+        dockets = _parse_docket_results(resp.text)
+        logger.info("PUCT: %d dockets in range", len(dockets))
+
+        sem = asyncio.Semaphore(_CONCURRENCY)
+
+        async def _fetch_items(control_number: str) -> list[dict]:
+            async with sem:
+                r = await client.get(FILINGS_URL, params={
+                    "ControlNumber": control_number,
+                    "DateFiledFrom": since.isoformat(),
+                    "DateFiledTo": until.isoformat(),
+                    "ItemMatch": "0",
+                })
+                r.raise_for_status()
+                items = _parse_filing_results(r.text, control_number)
+                # Defensive client-side date filter in case server ignores date params
+                return [
+                    i for i in items
+                    if i["filed_at"] >= since.isoformat()
+                ]
+
+        item_lists = await asyncio.gather(*[_fetch_items(d["control_number"]) for d in dockets])
+        return [item for sublist in item_lists for item in sublist]
+
+    async def _fetch_document_urls(
+        self, client: httpx.AsyncClient, items: list[dict]
+    ) -> list[dict]:
+        """L3: per-item documents page → rows with doc_url set."""
+        sem = asyncio.Semaphore(_CONCURRENCY)
+
+        async def _fetch_docs(item: dict) -> list[dict]:
+            async with sem:
+                r = await client.get(DOCUMENTS_URL, params={
+                    "controlNumber": item["control_number"],
+                    "itemNumber": item["item_number"],
+                })
+                r.raise_for_status()
+                return [
+                    {**item, "doc_url": url, "external_id": _doc_id_from_url(url)}
+                    for url in _parse_document_results(r.text)
+                ]
+
+        doc_lists = await asyncio.gather(*[_fetch_docs(item) for item in items])
+        return [doc for sublist in doc_lists for doc in sublist]
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
     async def _download_filing(self, client: httpx.AsyncClient, row: dict) -> RawFiling | None:
         doc_url = row.get("doc_url")
         if not doc_url:
             return None
-
         resp = await client.get(doc_url)
         resp.raise_for_status()
-
-        file_ext = _ext_from_response(resp)
         return RawFiling(
             source_slug=self.source_slug,
             external_id=row["external_id"],
@@ -101,12 +170,15 @@ class PuctCrawler(BaseCrawler):
             source_url=doc_url,
             filed_at=row["filed_at"],
             content=resp.content,
-            file_ext=file_ext,
+            file_ext=_ext_from_response(resp),
             metadata={
-                "docket": row.get("docket", ""),
-                "filer": row.get("filer", ""),
-                "volume_index": row.get("volume_index", 0),
-                "volume_total": row.get("volume_total", 1),
+                "control_number": row.get("control_number", ""),
+                "item_number": row.get("item_number", ""),
+                "item_key": row.get("item_key", ""),
+                "item_type": row.get("item_type", ""),
+                "item_type_raw": row.get("item_type", ""),
+                "description_raw": row.get("description_raw", ""),
+                "party": row.get("party", ""),
             },
         )
 
@@ -115,104 +187,103 @@ class PuctCrawler(BaseCrawler):
 
 
 def _cell_text(cell) -> str:
-    """Normalize cell text: collapse \xa0 and internal whitespace."""
+    """Normalize cell text: collapse whitespace and non-breaking spaces."""
     raw = cell.text(strip=True).replace("\xa0", " ")
     return re.sub(r"\s+", " ", raw).strip()
 
 
-def _parse_results(html: str) -> list[dict]:
+def _parse_docket_results(html: str) -> list[dict]:
+    """Parse /search/dockets/ → [{control_number, party, description}]."""
     tree = HTMLParser(html)
-    # Try common GridView id patterns used by PUCT Interchange
-    table = (
-        tree.css_first("table[id*='grdFilings']")
-        or tree.css_first("table[id*='GridView']")
-        or tree.css_first("table[id*='grd']")
-    )
+    table = tree.css_first("table")
     if not table:
-        logger.warning("PUCT results table not found — selectors may need updating")
+        logger.warning("PUCT: dockets table not found")
         return []
-
     results = []
-    for tr in table.css("tr")[1:]:  # skip header
+    for tr in table.css("tr")[1:]:
         cells = tr.css("td")
-        if len(cells) < 4:
+        if not cells:
             continue
-        rows = _parse_row(cells)
-        results.extend(rows)
+        control_number = _cell_text(cells[0])
+        if not control_number:
+            continue
+        results.append({
+            "control_number": control_number,
+            "party": _cell_text(cells[2]) if len(cells) > 2 else "",
+            "description": _cell_text(cells[3]) if len(cells) > 3 else "",
+        })
     return results
 
 
-def _parse_row(cells) -> list[dict]:
-    """
-    Expected PUCT Interchange column order:
-      0: Project/Docket number
-      1: Filed date (MM/DD/YYYY, Central time)
-      2: Filing type / description
-      3: Filer name
-      4+: Document link(s) — may include multiple volumes
-
-    Returns one dict per document link (multi-volume filings produce multiple entries).
-    """
-    try:
-        docket = _cell_text(cells[0])
+def _parse_filing_results(html: str, control_number: str) -> list[dict]:
+    """Parse /search/filings/ → [{control_number, item_number, item_key, filed_at, ...}]."""
+    tree = HTMLParser(html)
+    table = tree.css_first("table")
+    if not table:
+        return []
+    results = []
+    for tr in table.css("tr")[1:]:
+        cells = tr.css("td")
+        if len(cells) < 4:
+            continue
+        item_number = _cell_text(cells[0])
         filed_raw = _cell_text(cells[1])
-        filing_type_raw = _cell_text(cells[2])
-        filer = _cell_text(cells[3]) if len(cells) > 3 else ""
-
-        # Collect ALL document links — PUCT splits multi-volume filings across siblings
-        # urljoin handles both /relative and https://absolute hrefs correctly
-        doc_links: list[tuple[str, str]] = []
-        for cell in cells[4:]:
-            for anchor in cell.css("a[href]"):
-                href = anchor.attributes.get("href", "")
-                if not href:
-                    continue
-                doc_url = urljoin(BASE_URL, href)
-                m = re.search(r"[Dd]ocument[_]?[Ii][Dd]=(\d+)", href)
-                external_id = m.group(1) if m else re.sub(r"\W+", "-", href)[-64:]
-                doc_links.append((doc_url, external_id))
-
-        if not doc_links:
-            return []
+        party = _cell_text(cells[2])
+        item_type = _cell_text(cells[3])
+        description = _cell_text(cells[4]) if len(cells) > 4 else ""
 
         filed_at = _parse_date(filed_raw)
-        if not filed_at:
-            return []
+        if not filed_at or not item_number:
+            continue
 
-        type_lower = filing_type_raw.lower()
+        type_lower = description.lower()
         doc_type = next((v for k, v in _DOC_TYPE_MAP.items() if k in type_lower), "puct-filing")
+        title = f"{description} — {control_number}" if description else f"Item {item_number} — {control_number}"
 
-        # Normalize docket: PUCT strips leading zeros inconsistently — store without them
-        docket_norm = str(int(docket)) if docket.isdigit() else docket
+        results.append({
+            "control_number": control_number,
+            "item_number": item_number,
+            "item_key": f"{control_number}_{item_number}",
+            "filed_at": filed_at,
+            "party": party,
+            "item_type": item_type,
+            "description_raw": description,
+            "doc_type": doc_type,
+            "title": title,
+        })
+    return results
 
-        total_vols = len(doc_links)
-        rows = []
-        for i, (doc_url, external_id) in enumerate(doc_links):
-            vol_suffix = f" (Vol. {i + 1} of {total_vols})" if total_vols > 1 else ""
-            rows.append({
-                "docket": docket_norm,
-                "external_id": external_id,
-                "filed_at": filed_at,
-                "doc_type": doc_type,
-                "title": f"{filing_type_raw} — {docket_norm}{vol_suffix}" if docket_norm else f"{filing_type_raw}{vol_suffix}",
-                "filer": filer,
-                "doc_url": doc_url,
-                "volume_index": i,
-                "volume_total": total_vols,
-            })
-        return rows
 
-    except Exception:
-        logger.debug("Failed to parse row", exc_info=True)
+def _parse_document_results(html: str) -> list[str]:
+    """Parse /search/documents/ → list of absolute PDF download URLs."""
+    tree = HTMLParser(html)
+    table = tree.css_first("table")
+    if not table:
         return []
+    urls = []
+    for a in table.css("a[href]"):
+        href = a.attrs.get("href", "")
+        if not href:
+            continue
+        if href.startswith("http"):
+            urls.append(href)
+        elif "/Documents/" in href:
+            urls.append(urljoin(BASE_URL, href))
+    return urls
+
+
+def _doc_id_from_url(url: str) -> str:
+    """Extract document ID from .../Documents/56896_1_1415464.PDF → '56896_1_1415464'."""
+    m = re.search(r"/Documents/([^/?#]+?)(?:\.[A-Za-z]{2,4})?$", url)
+    return m.group(1) if m else re.sub(r"\W+", "-", url)[-64:]
 
 
 def _parse_date(raw: str) -> str | None:
-    """Parse a PUCT date string (Central time) and return as UTC ISO-8601."""
+    """Parse PUCT date string (Central time) → UTC ISO-8601.
+    Accepts M/D/YYYY (live site format), MM/DD/YYYY, and YYYY-MM-DD."""
     for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
         try:
             naive = datetime.strptime(raw.strip(), fmt)
-            # PUCT dates are midnight Central time — convert to UTC before storing
             return naive.replace(tzinfo=_CHICAGO).astimezone(UTC).isoformat()
         except ValueError:
             continue
