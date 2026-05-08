@@ -5,12 +5,14 @@ import logging
 
 from nodalpulse.queue.pg_queue import run_worker
 from nodalpulse.workers.crawl import handle_crawl_puct
+from nodalpulse.workers.extract import handle_extract
 
 logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
 
 HANDLERS = {
     "crawl-puct": handle_crawl_puct,
+    "extract": handle_extract,
 }
 
 
