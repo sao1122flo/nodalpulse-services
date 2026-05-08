@@ -204,7 +204,7 @@ async def discover_puct() -> JSONResponse:
             asyncio.gather(*[_try_pagesize(s) for s in [10, 50, 100, 200]]),
         )
 
-        # 6. Targeted probe: correct endpoint + correct date format to see real data rows
+        # 6. Targeted probe: correct endpoint + correct date format to see docket list rows
         search_resp = await client.get(
             f"{_PUCT_BASE}/search/search/",
             params={"DateFiledFrom": "2026-05-06", "DateFiledTo": "2026-05-08"},
@@ -215,6 +215,25 @@ async def discover_puct() -> JSONResponse:
         if search_table:
             for tr in search_table.css("tr")[1:6]:  # first 5 data rows
                 data_row_samples.append({
+                    "html": tr.html,
+                    "links": [
+                        {"text": a.text(strip=True), "href": a.attrs.get("href", "")}
+                        for a in tr.css("a[href]")
+                    ],
+                    "cells": [td.text(strip=True) for td in tr.css("td")],
+                })
+
+        # 7. Probe the filing-level page for a known docket — reveals document link structure
+        filings_resp = await client.get(
+            f"{_PUCT_BASE}/search/filings/",
+            params={"ControlNumber": "56896", "ItemMatch": "0"},
+        )
+        filings_tree = HTMLParser(filings_resp.text)
+        filings_table = filings_tree.css_first("table")
+        filing_row_samples = []
+        if filings_table:
+            for tr in filings_table.css("tr")[1:6]:  # first 5 data rows
+                filing_row_samples.append({
                     "html": tr.html,
                     "links": [
                         {"text": a.text(strip=True), "href": a.attrs.get("href", "")}
@@ -244,6 +263,12 @@ async def discover_puct() -> JSONResponse:
             "tables_found": 1 if search_table else 0,
             "total_rows": len(search_table.css("tr")) if search_table else 0,
             "data_row_samples": data_row_samples,
+        },
+        "filing_level_probe": {
+            "status": filings_resp.status_code,
+            "url": str(filings_resp.url),
+            "total_rows": len(filings_table.css("tr")) if filings_table else 0,
+            "filing_row_samples": filing_row_samples,
         },
         "cookies_after_shell": cookies_after_shell,
         "cookies_after_known_url": cookies_after_known,
