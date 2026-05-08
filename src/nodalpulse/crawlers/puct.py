@@ -194,7 +194,7 @@ def _parse_docket_results(html: str) -> list[dict]:
         if not cells:
             continue
         control_number = _cell_text(cells[0])
-        if not control_number:
+        if not control_number or not control_number.isdigit():
             continue
         results.append({
             "control_number": control_number,
