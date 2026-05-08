@@ -58,6 +58,45 @@ _SPA_PATTERNS = [
 ]
 
 
+def _dump_form_inputs(tree: HTMLParser) -> tuple[list[dict], list[dict]]:
+    """Return (inputs, form_actions) from a parsed page — skips ASP.NET __ fields."""
+    inputs = []
+    for el in tree.css("input[name], select[name], textarea[name]"):
+        name = el.attrs.get("name", "")
+        if name.startswith("__"):
+            continue
+        inputs.append({
+            "name": name,
+            "type": el.attrs.get("type", el.tag),
+            "value": el.attrs.get("value", ""),
+            "placeholder": el.attrs.get("placeholder", ""),
+        })
+    actions = [
+        {"action": f.attrs.get("action", ""), "method": f.attrs.get("method", "")}
+        for f in tree.css("form")
+    ]
+    return inputs, actions
+
+
+def _dump_table_headers(tree: HTMLParser) -> list[dict]:
+    """Return column headers for every table that has at least one row."""
+    out = []
+    for t in tree.css("table"):
+        rows = t.css("tr")
+        header_row = t.css_first("thead tr") or (rows[0] if rows else None)
+        if not header_row:
+            continue
+        headers = [th.text(strip=True) for th in header_row.css("th, td")]
+        if headers:
+            out.append({
+                "id": t.attrs.get("id", ""),
+                "class": t.attrs.get("class", ""),
+                "rows": len(rows),
+                "headers": headers,
+            })
+    return out
+
+
 @app.get("/discover/puct")
 async def discover_puct() -> JSONResponse:
     """Temporary endpoint: probe the PUCT Interchange site from Railway's US IP
@@ -65,12 +104,13 @@ async def discover_puct() -> JSONResponse:
     async with httpx.AsyncClient(
         headers=_BROWSER_HEADERS, follow_redirects=True, timeout=30, verify=False
     ) as client:
-        # 1. Fetch the SPA shell
+        # 1. Fetch the search form page — extract form inputs to learn accepted param names
         r = await client.get(f"{_PUCT_BASE}/search/filings/")
         tree = HTMLParser(r.text)
 
         spa_found = [p for p in _SPA_PATTERNS if re.search(re.escape(p), r.text)]
         scripts = [s.attrs.get("src", "") for s in tree.css("script[src]")]
+        form_inputs, form_actions = _dump_form_inputs(tree)
 
         api_hints: list[dict] = []
         for script in tree.css("script"):
@@ -101,21 +141,20 @@ async def discover_puct() -> JSONResponse:
 
         probes = await asyncio.gather(*[_probe(p) for p in _API_CANDIDATES])
 
-        # 3. Fetch a known-working ControlNumber page to inspect table structure
+        # 3. Fetch a known-working ControlNumber page — inspect table structure and form inputs
         known = await client.get(f"{_PUCT_BASE}/Search/Filings?ControlNumber=56896")
         known_tree = HTMLParser(known.text)
-        tables = [
-            {"id": t.attrs.get("id", ""), "class": t.attrs.get("class", ""), "rows": len(t.css("tr"))}
-            for t in known_tree.css("table")
-        ]
+        table_headers = _dump_table_headers(known_tree)
+        known_form_inputs, known_form_actions = _dump_form_inputs(known_tree)
         table_samples = []
         for t in known_tree.css("table"):
             if len(t.css("tr")) > 1:
-                table_samples.append({"id": t.attrs.get("id", ""), "html": t.html[:500]})
+                table_samples.append({"id": t.attrs.get("id", ""), "html": t.html[:600]})
 
-        # 4. Try date search with various param name candidates
+        # 4. Try date param name candidates (PascalCase convention, ranked by likelihood)
         date_param_guesses = [
             {"FiledFrom": "05/06/2026", "FiledTo": "05/08/2026"},
+            {"DateFiledFrom": "05/06/2026", "DateFiledTo": "05/08/2026"},
             {"FilingDateFrom": "05/06/2026", "FilingDateTo": "05/08/2026"},
             {"DateFrom": "05/06/2026", "DateTo": "05/08/2026"},
             {"StartDate": "05/06/2026", "EndDate": "05/08/2026"},
@@ -125,24 +164,49 @@ async def discover_puct() -> JSONResponse:
             resp = await client.get(f"{_PUCT_BASE}/Search/Filings", params=params)
             t = HTMLParser(resp.text)
             tbls = t.css("table")
+            row_counts = [len(tbl.css("tr")) for tbl in tbls]
             return {
                 "params": params,
                 "status": resp.status_code,
                 "tables_found": len(tbls),
                 "table_ids": [tbl.attrs.get("id", "") for tbl in tbls],
+                "row_counts": row_counts,
                 "snippet": resp.text[2000:3000],
             }
 
-        date_probes = await asyncio.gather(*[_try_date_params(p) for p in date_param_guesses])
+        # 5. Probe PageSize to detect pagination cap
+        async def _try_pagesize(size: int) -> dict:
+            resp = await client.get(
+                f"{_PUCT_BASE}/Search/Filings",
+                params={"ControlNumber": "56896", "PageSize": size},
+            )
+            t = HTMLParser(resp.text)
+            tbls = t.css("table")
+            return {
+                "PageSize": size,
+                "status": resp.status_code,
+                "tables_found": len(tbls),
+                "row_counts": [len(tbl.css("tr")) for tbl in tbls],
+            }
+
+        date_probes, pagesize_probes = await asyncio.gather(
+            asyncio.gather(*[_try_date_params(p) for p in date_param_guesses]),
+            asyncio.gather(*[_try_pagesize(s) for s in [10, 50, 100, 200]]),
+        )
 
     return JSONResponse({
         "shell_status": r.status_code,
         "shell_length": len(r.text),
         "spa_patterns_found": spa_found,
         "scripts": scripts,
+        "form_inputs": form_inputs,
+        "form_actions": form_actions,
         "api_hints": api_hints[:5],
         "api_probes": list(probes),
-        "known_url_tables": tables,
+        "known_url_table_headers": table_headers,
         "known_url_table_samples": table_samples,
+        "known_url_form_inputs": known_form_inputs,
+        "known_url_form_actions": known_form_actions,
         "date_param_probes": list(date_probes),
+        "pagesize_probes": list(pagesize_probes),
     })
