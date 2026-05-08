@@ -242,6 +242,31 @@ async def discover_puct() -> JSONResponse:
                     "cells": [td.text(strip=True) for td in tr.css("td")],
                 })
 
+        # 8. Probe the documents page — reveals actual download link URLs
+        docs_resp = await client.get(
+            f"{_PUCT_BASE}/search/documents/",
+            params={"controlNumber": "56896", "itemNumber": "1"},
+        )
+        docs_tree = HTMLParser(docs_resp.text)
+        docs_table = docs_tree.css_first("table")
+        doc_row_samples = []
+        if docs_table:
+            for tr in docs_table.css("tr")[1:6]:
+                doc_row_samples.append({
+                    "html": tr.html,
+                    "links": [
+                        {"text": a.text(strip=True), "href": a.attrs.get("href", "")}
+                        for a in tr.css("a[href]")
+                    ],
+                    "cells": [td.text(strip=True) for td in tr.css("td")],
+                })
+        # Also grab all links on the page in case documents aren't in a table
+        all_doc_links = [
+            {"text": a.text(strip=True), "href": a.attrs.get("href", "")}
+            for a in docs_tree.css("a[href]")
+            if any(x in a.attrs.get("href", "") for x in ["document", "download", "file", "pdf", ".pdf", "getdoc"])
+        ]
+
     return JSONResponse({
         "shell_status": r.status_code,
         "shell_length": len(r.text),
@@ -269,6 +294,14 @@ async def discover_puct() -> JSONResponse:
             "url": str(filings_resp.url),
             "total_rows": len(filings_table.css("tr")) if filings_table else 0,
             "filing_row_samples": filing_row_samples,
+        },
+        "documents_page_probe": {
+            "status": docs_resp.status_code,
+            "url": str(docs_resp.url),
+            "table_found": docs_table is not None,
+            "total_rows": len(docs_table.css("tr")) if docs_table else 0,
+            "doc_row_samples": doc_row_samples,
+            "all_doc_links": all_doc_links[:20],
         },
         "cookies_after_shell": cookies_after_shell,
         "cookies_after_known_url": cookies_after_known,
