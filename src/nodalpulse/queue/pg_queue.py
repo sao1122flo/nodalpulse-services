@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import socket
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -40,7 +40,7 @@ async def dequeue(kind: str, lock_seconds: int = 60) -> dict[str, Any] | None:
                 UPDATE jobs SET
                     status = 'running',
                     locked_by = :worker_id,
-                    locked_until = NOW() + CAST(:lock_interval AS interval),
+                    locked_until = NOW() + :lock_interval,
                     attempts = attempts + 1,
                     updated_at = NOW()
                 WHERE id = (
@@ -55,7 +55,7 @@ async def dequeue(kind: str, lock_seconds: int = 60) -> dict[str, Any] | None:
                 RETURNING id::text, kind, payload, attempts
                 """
             ),
-            {"worker_id": WORKER_ID, "lock_interval": f"{lock_seconds} seconds", "kind": kind},
+            {"worker_id": WORKER_ID, "lock_interval": timedelta(seconds=lock_seconds), "kind": kind},
         )
         row = result.mappings().first()
         await session.commit()
