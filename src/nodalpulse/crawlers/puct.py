@@ -15,20 +15,10 @@ from nodalpulse.crawlers.base import BaseCrawler, RawFiling
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://interchange.puc.texas.gov"
-SEARCH_URL = f"{BASE_URL}/Apps/Filings/Home.aspx"
-
-# ASP.NET WebForms field names — adjust here if PUCT redesigns the form
-_F_FILED_FROM = "ctl00$ContentPlaceHolder1$txtFiledFrom"
-_F_FILED_TO = "ctl00$ContentPlaceHolder1$txtFiledTo"
-_F_SEARCH_BTN = "ctl00$ContentPlaceHolder1$btnSearch"
+# PUCT redesigned from ASP.NET WebForms (/Apps/Filings/Home.aspx) to a modern app in 2025
+SEARCH_URL = f"{BASE_URL}/search/filings/"
 
 _CHICAGO = ZoneInfo("America/Chicago")
-
-# Patterns that indicate ASP.NET returned a session-expired page with 200 OK
-_SESSION_EXPIRED_RE = re.compile(
-    r"session.{0,30}(expired|timed.?out)|please.{0,30}return|your session",
-    re.IGNORECASE,
-)
 
 # PUCT filing type label → taxonomy doc-type tag
 _DOC_TYPE_MAP: dict[str, str] = {
@@ -81,46 +71,27 @@ class PuctCrawler(BaseCrawler):
             logger.info("PUCT: downloaded %d/%d", len(results), len(rows))
             return results
 
-    async def _get_viewstate(self, client: httpx.AsyncClient) -> dict[str, str]:
-        resp = await client.get(SEARCH_URL)
-        resp.raise_for_status()
-        tree = HTMLParser(resp.text)
-        return {
-            "__VIEWSTATE": _input_val(tree, "__VIEWSTATE"),
-            "__VIEWSTATEGENERATOR": _input_val(tree, "__VIEWSTATEGENERATOR"),
-            "__EVENTVALIDATION": _input_val(tree, "__EVENTVALIDATION"),
-        }
-
     async def _search(
         self,
         client: httpx.AsyncClient,
         since: date,
         until: date,
     ) -> list[dict]:
-        for attempt in range(2):
-            # Re-fetch viewstate immediately before every POST — ASP.NET sessions expire
-            # and __EVENTVALIDATION gates POST acceptance alongside __VIEWSTATE
-            viewstate = await self._get_viewstate(client)
-            payload = {
-                **viewstate,
-                _F_FILED_FROM: since.strftime("%m/%d/%Y"),
-                _F_FILED_TO: until.strftime("%m/%d/%Y"),
-                _F_SEARCH_BTN: "Search",
-            }
-            resp = await client.post(SEARCH_URL, data=payload)
-            resp.raise_for_status()
-
-            # PUCT returns 200 with a session-expired HTML page instead of 401/403
-            if _SESSION_EXPIRED_RE.search(resp.text[:2000]):
-                if attempt == 0:
-                    logger.warning("PUCT: session expired (200 OK with expired page), re-warming")
-                    continue
-                logger.error("PUCT: session expired after re-warm — returning empty result")
-                return []
-
-            return _parse_results(resp.text)
-
-        return []
+        # New PUCT Interchange uses GET with query params (no ViewState/POST).
+        # Date param names discovered by inspecting the live search form — update if PUCT changes them.
+        params = {
+            "FiledFrom": since.strftime("%m/%d/%Y"),
+            "FiledTo": until.strftime("%m/%d/%Y"),
+            "DocumentType": "ALL",
+            "SortBy": "FileStamp",
+            "SortOrder": "Descending",
+        }
+        resp = await client.get(SEARCH_URL, params=params)
+        logger.info("PUCT search GET %s → %d", resp.url, resp.status_code)
+        # Log enough HTML to diagnose form field names / table structure if needed
+        logger.info("PUCT response snippet: %s", resp.text[:4000])
+        resp.raise_for_status()
+        return _parse_results(resp.text)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
     async def _download_filing(self, client: httpx.AsyncClient, row: dict) -> RawFiling | None:
@@ -157,11 +128,6 @@ def _cell_text(cell) -> str:
     """Normalize cell text: collapse \xa0 and internal whitespace."""
     raw = cell.text(strip=True).replace("\xa0", " ")
     return re.sub(r"\s+", " ", raw).strip()
-
-
-def _input_val(tree: HTMLParser, name: str) -> str:
-    node = tree.css_first(f'input[name="{name}"]')
-    return node.attributes.get("value", "") if node else ""
 
 
 def _parse_results(html: str) -> list[dict]:
