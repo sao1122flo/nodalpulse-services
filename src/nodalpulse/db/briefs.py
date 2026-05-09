@@ -74,7 +74,7 @@ async def get_last_brief_date(user_id: str) -> date | None:
     """Most recent brief date for a user, or None if no briefs yet."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            text("SELECT MAX(date) FROM briefs WHERE user_id = CAST(:uid AS uuid)"),
+            text("SELECT MAX(date) FROM briefs WHERE user_id = CAST(:uid AS uuid) AND send_status = 'sent'"),
             {"uid": user_id},
         )
         return result.scalar_one_or_none()
@@ -101,7 +101,7 @@ async def get_filings_for_brief(since: datetime, until: datetime) -> list[dict]:
                 JOIN extractions e ON e.filing_id = f.id
                 WHERE f.filed_at >= :since
                   AND f.filed_at < :until
-                  AND e.haiku_verdict != 'irrelevant'
+                  AND e.haiku_verdict IS DISTINCT FROM 'irrelevant'
                 ORDER BY f.filed_at DESC
             """),
             {"since": since, "until": until},
