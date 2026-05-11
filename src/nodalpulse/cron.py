@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 _CHICAGO = ZoneInfo("America/Chicago")
+_CRAWL_HOUR = 5         # 05:xx CT — crawl runs 1 hour before briefs
 _BRIEF_HOUR = 6         # 06:xx CT
 _BRIEF_WINDOW_MIN = 5   # fire once during the first 5 minutes of the hour
 
@@ -39,9 +40,12 @@ async def _enqueue_briefs_for_date(brief_date: date) -> int:
 
 
 async def run_scheduler() -> None:
-    logger.info("Cron scheduler starting — brief window: weekdays %02d:00–%02d:%02d CT",
-                _BRIEF_HOUR, _BRIEF_HOUR, _BRIEF_WINDOW_MIN)
-    triggered: set[date] = set()
+    logger.info(
+        "Cron scheduler starting — crawl: weekdays %02d:00 CT, briefs: weekdays %02d:00–%02d:%02d CT",
+        _CRAWL_HOUR, _BRIEF_HOUR, _BRIEF_HOUR, _BRIEF_WINDOW_MIN,
+    )
+    crawl_triggered: set[date] = set()
+    brief_triggered: set[date] = set()
 
     while True:
         await asyncio.sleep(60)
@@ -52,21 +56,29 @@ async def run_scheduler() -> None:
         if now_ct.weekday() >= 5:
             continue
 
-        # Fire once during 06:00–06:04 CT
-        if now_ct.hour != _BRIEF_HOUR or now_ct.minute >= _BRIEF_WINDOW_MIN:
-            continue
-
         today = now_ct.date()
-        if today in triggered:
-            continue
 
-        logger.info("Enqueuing daily briefs for %s", today)
-        try:
-            count = await _enqueue_briefs_for_date(today)
-            triggered.add(today)
-            logger.info("Enqueued %d compose-brief jobs for %s", count, today)
-        except Exception:
-            logger.exception("Failed to enqueue briefs for %s — will retry next minute", today)
+        # Crawl at 05:00–05:04 CT
+        if now_ct.hour == _CRAWL_HOUR and now_ct.minute < _BRIEF_WINDOW_MIN:
+            if today not in crawl_triggered:
+                logger.info("Enqueuing daily crawl for %s", today)
+                try:
+                    await enqueue("crawl-puct", {}, priority=10)
+                    crawl_triggered.add(today)
+                    logger.info("Enqueued crawl-puct for %s", today)
+                except Exception:
+                    logger.exception("Failed to enqueue crawl for %s — will retry next minute", today)
+
+        # Brief at 06:00–06:04 CT
+        if now_ct.hour == _BRIEF_HOUR and now_ct.minute < _BRIEF_WINDOW_MIN:
+            if today not in brief_triggered:
+                logger.info("Enqueuing daily briefs for %s", today)
+                try:
+                    count = await _enqueue_briefs_for_date(today)
+                    brief_triggered.add(today)
+                    logger.info("Enqueued %d compose-brief jobs for %s", count, today)
+                except Exception:
+                    logger.exception("Failed to enqueue briefs for %s — will retry next minute", today)
 
 
 if __name__ == "__main__":
