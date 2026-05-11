@@ -31,6 +31,7 @@ BASE_URL = "https://www.ercot.com"
 LISTING_URL = f"{BASE_URL}/mktrules/nprrs"
 _CHICAGO = ZoneInfo("America/Chicago")
 _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
 
 # Doc-type map keyed on status / title keywords (lowercase)
 _DOC_TYPE_MAP = {
@@ -52,16 +53,15 @@ class ErcotNprrCrawler(BaseCrawler):
         since_date = date.fromisoformat(since) if since else date.today() - timedelta(days=2)
         logger.info("ERCOT NPRR crawl since=%s", since_date)
 
-        rows = await _scrape_listing(since_date)
-        logger.info("ERCOT NPRR: %d rows after date filter", len(rows))
-
-        filings: list[RawFiling] = []
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
-            ctx = await browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
-            )
+            ctx = await browser.new_context(user_agent=_UA)
             page = await ctx.new_page()
+
+            rows = await _scrape_listing(page, since_date)
+            logger.info("ERCOT NPRR: %d rows after date filter", len(rows))
+
+            filings: list[RawFiling] = []
             for row in rows:
                 try:
                     filing = await _fetch_nprr_document(page, row)
@@ -69,53 +69,45 @@ class ErcotNprrCrawler(BaseCrawler):
                         filings.append(filing)
                 except Exception:
                     logger.exception("Error fetching NPRR %s", row.get("nprr_number", "?"))
+
             await browser.close()
 
         logger.info("ERCOT NPRR: %d filings fetched", len(filings))
         return filings
 
 
-async def _scrape_listing(since: date) -> list[dict]:
-    """Load the NPRR listing via Playwright and extract rows since `since`."""
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
-        ctx = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
-        )
-        page = await ctx.new_page()
-        try:
-            await page.goto(LISTING_URL, wait_until="networkidle", timeout=60_000)
-            # Wait for table rows to appear
-            await page.wait_for_selector("table tr", timeout=20_000)
-        except Exception:
-            logger.exception("ERCOT NPRR: failed to load listing page")
-            await browser.close()
-            return []
+async def _scrape_listing(page, since: date) -> list[dict]:
+    """Load the NPRR listing and extract rows since `since`. Reuses caller's page."""
+    try:
+        await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
+        await page.wait_for_selector("table tr", timeout=20_000)
+    except Exception:
+        logger.exception("ERCOT NPRR: failed to load listing page")
+        return []
 
-        rows = await page.evaluate("""() => {
-            const results = [];
-            const tables = document.querySelectorAll('table');
-            for (const table of tables) {
-                const trs = table.querySelectorAll('tr');
-                for (const tr of trs) {
-                    const cells = tr.querySelectorAll('td');
-                    if (cells.length < 3) continue;
-                    const linkEl = cells[0].querySelector('a');
-                    results.push({
-                        nprr_number: cells[0].innerText.trim(),
-                        title: cells[1] ? cells[1].innerText.trim() : '',
-                        submitted_date: cells[2] ? cells[2].innerText.trim() : '',
-                        effective_date: cells[3] ? cells[3].innerText.trim() : '',
-                        status: cells[4] ? cells[4].innerText.trim() : '',
-                        detail_href: linkEl ? linkEl.getAttribute('href') : null,
-                    });
-                }
+    rows = await page.evaluate("""() => {
+        const results = [];
+        const tables = document.querySelectorAll('table');
+        for (const table of tables) {
+            const trs = table.querySelectorAll('tr');
+            for (const tr of trs) {
+                const cells = tr.querySelectorAll('td');
+                if (cells.length < 3) continue;
+                const linkEl = cells[0].querySelector('a');
+                results.push({
+                    nprr_number: cells[0].innerText.trim(),
+                    title: cells[1] ? cells[1].innerText.trim() : '',
+                    submitted_date: cells[2] ? cells[2].innerText.trim() : '',
+                    effective_date: cells[3] ? cells[3].innerText.trim() : '',
+                    status: cells[4] ? cells[4].innerText.trim() : '',
+                    detail_href: linkEl ? linkEl.getAttribute('href') : null,
+                });
             }
-            return results;
-        }""")
+        }
+        return results;
+    }""")
 
-        logger.debug("ERCOT NPRR listing raw rows: %d", len(rows))
-        await browser.close()
+    logger.info("ERCOT NPRR listing raw rows from page: %d", len(rows))
 
     filtered = []
     for row in rows:
@@ -127,6 +119,7 @@ async def _scrape_listing(since: date) -> list[dict]:
             continue
         row["filed_at"] = filed_at
         filtered.append(row)
+    logger.info("ERCOT NPRR: %d rows pass since=%s filter (total on page: %d)", len(filtered), since, len(rows))
     return filtered
 
 
@@ -139,7 +132,7 @@ async def _fetch_nprr_document(page, row: dict) -> RawFiling | None:
 
     detail_url = detail_href if detail_href.startswith("http") else f"{BASE_URL}{detail_href}"
     try:
-        await page.goto(detail_url, wait_until="networkidle", timeout=60_000)
+        await page.goto(detail_url, wait_until="domcontentloaded", timeout=60_000)
         await page.wait_for_selector("a[href]", timeout=10_000)
     except Exception:
         logger.warning("NPRR detail page timeout for %s", detail_url)
@@ -154,10 +147,8 @@ async def _fetch_nprr_document(page, row: dict) -> RawFiling | None:
 
     if not pdf_url:
         logger.warning("NPRR %s: no PDF found at %s", row.get("nprr_number"), detail_url)
-        # Still create a filing record without content so it gets extraction-skipped gracefully
         return None
 
-    # Download the PDF via Playwright's request context
     response = await page.request.get(pdf_url)
     if not response.ok:
         logger.warning("NPRR PDF download failed %s → %s", pdf_url, response.status)

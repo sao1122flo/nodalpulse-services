@@ -25,6 +25,7 @@ BASE_URL = "https://www.ercot.com"
 LISTING_URL = f"{BASE_URL}/services/comm/mkt_notices"
 _CHICAGO = ZoneInfo("America/Chicago")
 _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
 
 
 class ErcotMarketNoticesCrawler(BaseCrawler):
@@ -34,16 +35,15 @@ class ErcotMarketNoticesCrawler(BaseCrawler):
         since_date = date.fromisoformat(since) if since else date.today() - timedelta(days=2)
         logger.info("ERCOT Market Notices crawl since=%s", since_date)
 
-        rows = await _scrape_listing(since_date)
-        logger.info("ERCOT MN: %d rows after date filter", len(rows))
-
-        filings: list[RawFiling] = []
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
-            ctx = await browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
-            )
+            ctx = await browser.new_context(user_agent=_UA)
             page = await ctx.new_page()
+
+            rows = await _scrape_listing(page, since_date)
+            logger.info("ERCOT MN: %d rows after date filter", len(rows))
+
+            filings: list[RawFiling] = []
             for row in rows:
                 try:
                     filing = await _fetch_notice_document(page, row)
@@ -51,49 +51,42 @@ class ErcotMarketNoticesCrawler(BaseCrawler):
                         filings.append(filing)
                 except Exception:
                     logger.exception("Error fetching MN %s", row.get("notice_id", "?"))
+
             await browser.close()
 
         logger.info("ERCOT MN: %d filings fetched", len(filings))
         return filings
 
 
-async def _scrape_listing(since: date) -> list[dict]:
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
-        ctx = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
-        )
-        page = await ctx.new_page()
-        try:
-            await page.goto(LISTING_URL, wait_until="networkidle", timeout=60_000)
-            await page.wait_for_selector("table tr", timeout=20_000)
-        except Exception:
-            logger.exception("ERCOT MN: failed to load listing page")
-            await browser.close()
-            return []
+async def _scrape_listing(page, since: date) -> list[dict]:
+    try:
+        await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
+        await page.wait_for_selector("table tr", timeout=20_000)
+    except Exception:
+        logger.exception("ERCOT MN: failed to load listing page")
+        return []
 
-        rows = await page.evaluate("""() => {
-            const results = [];
-            const tables = document.querySelectorAll('table');
-            for (const table of tables) {
-                const trs = table.querySelectorAll('tr');
-                for (const tr of trs) {
-                    const cells = tr.querySelectorAll('td');
-                    if (cells.length < 2) continue;
-                    const linkEl = tr.querySelector('a[href]');
-                    results.push({
-                        date_raw: cells[0] ? cells[0].innerText.trim() : '',
-                        notice_id: cells[1] ? cells[1].innerText.trim() : '',
-                        subject: cells[2] ? cells[2].innerText.trim() : '',
-                        href: linkEl ? linkEl.getAttribute('href') : null,
-                    });
-                }
+    rows = await page.evaluate("""() => {
+        const results = [];
+        const tables = document.querySelectorAll('table');
+        for (const table of tables) {
+            const trs = table.querySelectorAll('tr');
+            for (const tr of trs) {
+                const cells = tr.querySelectorAll('td');
+                if (cells.length < 2) continue;
+                const linkEl = tr.querySelector('a[href]');
+                results.push({
+                    date_raw: cells[0] ? cells[0].innerText.trim() : '',
+                    notice_id: cells[1] ? cells[1].innerText.trim() : '',
+                    subject: cells[2] ? cells[2].innerText.trim() : '',
+                    href: linkEl ? linkEl.getAttribute('href') : null,
+                });
             }
-            return results;
-        }""")
+        }
+        return results;
+    }""")
 
-        logger.debug("ERCOT MN listing raw rows: %d", len(rows))
-        await browser.close()
+    logger.info("ERCOT MN listing raw rows from page: %d", len(rows))
 
     filtered = []
     for row in rows:
@@ -104,6 +97,7 @@ async def _scrape_listing(since: date) -> list[dict]:
             continue
         row["filed_at"] = filed_at
         filtered.append(row)
+    logger.info("ERCOT MN: %d rows pass since=%s filter (total on page: %d)", len(filtered), since, len(rows))
     return filtered
 
 
@@ -120,7 +114,7 @@ async def _fetch_notice_document(page, row: dict) -> RawFiling | None:
         pdf_url = url
     else:
         try:
-            await page.goto(url, wait_until="networkidle", timeout=60_000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
             pdf_url = await page.evaluate("""() => {
                 const links = Array.from(document.querySelectorAll('a[href]'));
                 const pdf = links.find(a => a.href.toLowerCase().endsWith('.pdf'));

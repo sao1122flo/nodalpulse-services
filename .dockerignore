@@ -1,0 +1,12 @@
+.venv
+__pycache__
+.pytest_cache
+.git
+.gitignore
+.env*
+*.pyc
+tests/
+.ruff_cache
+.mypy_cache
+node_modules
+nixpacks.toml
