@@ -191,7 +191,7 @@ def build_brief_html(
     </div>
     {items_html}
     <div class="footer">
-      <a href="{app_url}/briefs/{brief_date.isoformat()}">View in app</a>
+      <a href="{app_url}/dashboard">View in app</a>
       &nbsp;&middot;&nbsp;
       <a href="{unsubscribe_url}">Unsubscribe</a>
       &nbsp;&middot;&nbsp;
@@ -344,7 +344,7 @@ def build_brief_text(
 
     lines += [
         "-" * 52,
-        f"View in app:  {app_url}/briefs/{brief_date.isoformat()}",
+        f"View in app:  {app_url}/dashboard",
         f"Unsubscribe:  {unsubscribe_url}",
         f"Status:       https://nodalpulse.com/status",
         f"v{composer_version}",
