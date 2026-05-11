@@ -137,6 +137,25 @@ def _build_citation(payload: dict, filing: dict) -> str:
         except Exception:
             metadata = {}
 
+    doc_type = filing.get("doc_type", "puct-filing")
+
+    if doc_type == "ercot-nprr":
+        identifier = (
+            metadata.get("nprr_number")
+            or payload.get("docket_number")
+            or filing["filing_id"][:8]
+        )
+        return f"[ERCOT {identifier}, p.1 ¶1]"
+
+    if doc_type == "ercot-mn":
+        identifier = (
+            metadata.get("notice_id")
+            or payload.get("docket_number")
+            or filing["filing_id"][:8]
+        )
+        return f"[ERCOT-MN {identifier}, p.1 ¶1]"
+
+    # PUCT (default)
     control = (
         payload.get("docket_number")
         or metadata.get("control_number")

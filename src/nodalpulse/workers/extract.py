@@ -34,7 +34,7 @@ Classify the document as:
 Respond with JSON only: {"verdict": "relevant"|"irrelevant"|"uncertain", "reason": "<one sentence>"}\
 """
 
-_EXTRACT_SYSTEM = """\
+_EXTRACT_SYSTEM_PUCT = """\
 You are an expert analyst of Texas electricity regulatory filings at the Public Utility
 Commission of Texas (PUCT).
 
@@ -50,6 +50,48 @@ Extract structured information from the document. Respond with JSON only, no mar
   "deadlines": [{"description": "...", "date": "<ISO date or null>"}]
 }\
 """
+
+_EXTRACT_SYSTEM_ERCOT_NPRR = """\
+You are an expert analyst of ERCOT (Electric Reliability Council of Texas) protocol
+revision documents, including NPRRs, PGRRs, MPRRs, NOGRRs, SCRs, SMOGRRs, and RMGRRs.
+
+Extract structured information from the document. Respond with JSON only, no markdown fences:
+{
+  "summary": "<2-3 sentence plain-language summary>",
+  "key_points": ["<point>", ...],
+  "parties": ["<party name or submitting entity>", ...],
+  "docket_number": "<NPRR/PGRR/MPRR number, e.g. NPRR1287, or null>",
+  "relief_requested": "<what protocol change is being proposed, or null>",
+  "outcome": "<if this is a final disposition: the ruling or withdrawal status, or null>",
+  "effective_date": "<ISO date if mentioned, or null>",
+  "deadlines": [{"description": "...", "date": "<ISO date or null>"}]
+}\
+"""
+
+_EXTRACT_SYSTEM_ERCOT_MN = """\
+You are an expert analyst of ERCOT (Electric Reliability Council of Texas) Market Notices,
+which are operational communications to ERCOT market participants.
+
+Extract structured information from the document. Respond with JSON only, no markdown fences:
+{
+  "summary": "<2-3 sentence plain-language summary>",
+  "key_points": ["<point>", ...],
+  "parties": ["<affected market segment or entity>", ...],
+  "docket_number": "<Market Notice ID or null>",
+  "relief_requested": null,
+  "outcome": null,
+  "effective_date": "<ISO date if mentioned, or null>",
+  "deadlines": [{"description": "...", "date": "<ISO date or null>"}]
+}\
+"""
+
+
+def _extract_system_for_doc_type(doc_type: str) -> str:
+    if doc_type == "ercot-mn":
+        return _EXTRACT_SYSTEM_ERCOT_MN
+    if doc_type.startswith("ercot-"):
+        return _EXTRACT_SYSTEM_ERCOT_NPRR
+    return _EXTRACT_SYSTEM_PUCT
 
 
 async def handle_extract(payload: dict) -> dict:
@@ -92,7 +134,7 @@ async def handle_extract(payload: dict) -> dict:
 
     # Sonnet extraction for relevant/uncertain
     extract_raw = await llm_extract(
-        _EXTRACT_SYSTEM,
+        _extract_system_for_doc_type(doc_type),
         f"Document type: {doc_type}\n\n{text[:40_000]}",
     )
     try:

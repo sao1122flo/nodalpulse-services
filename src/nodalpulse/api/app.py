@@ -130,6 +130,15 @@ async def trigger_crawl_puct(body: CrawlRequest | None = None) -> JSONResponse:
     return JSONResponse({"job_id": job_id, "status": "queued"})
 
 
+@app.post("/crawl/ercot")
+async def trigger_crawl_ercot(body: CrawlRequest | None = None) -> JSONResponse:
+    if body is None:
+        body = CrawlRequest()
+    job_id = await enqueue("crawl-ercot", {"since": body.since}, priority=10)
+    logger.info("Enqueued crawl-ercot job %s (since=%s)", job_id, body.since)
+    return JSONResponse({"job_id": job_id, "status": "queued"})
+
+
 class BriefTriggerRequest(BaseModel):
     brief_date: str | None = None  # ISO date; defaults to today
 

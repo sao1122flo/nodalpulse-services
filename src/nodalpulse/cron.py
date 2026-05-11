@@ -61,13 +61,14 @@ async def run_scheduler() -> None:
         # Crawl at 05:00–05:04 CT
         if now_ct.hour == _CRAWL_HOUR and now_ct.minute < _BRIEF_WINDOW_MIN:
             if today not in crawl_triggered:
-                logger.info("Enqueuing daily crawl for %s", today)
+                logger.info("Enqueuing daily crawls for %s", today)
                 try:
                     await enqueue("crawl-puct", {}, priority=10)
+                    await enqueue("crawl-ercot", {}, priority=10)
                     crawl_triggered.add(today)
-                    logger.info("Enqueued crawl-puct for %s", today)
+                    logger.info("Enqueued crawl-puct + crawl-ercot for %s", today)
                 except Exception:
-                    logger.exception("Failed to enqueue crawl for %s — will retry next minute", today)
+                    logger.exception("Failed to enqueue crawls for %s — will retry next minute", today)
 
         # Brief at 06:00–06:04 CT
         if now_ct.hour == _BRIEF_HOUR and now_ct.minute < _BRIEF_WINDOW_MIN:
