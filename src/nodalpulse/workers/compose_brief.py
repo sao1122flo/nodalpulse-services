@@ -327,6 +327,7 @@ async def handle_compose_brief(payload: dict) -> dict:
                 "summary": payload.get("summary", "Filing summary unavailable; see source."),
                 "citation": _build_citation(payload, f),
                 "doc_type": f.get("doc_type", ""),
+                "source_url": f.get("source_url", ""),
             })
             return
         sections[section_key].append({
@@ -335,6 +336,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             "summary": item["summary"],
             "citation": citation,
             "doc_type": f.get("doc_type", ""),
+            "source_url": f.get("source_url", ""),
         })
         valid_filing_ids.append(fid)
         citation_count += 1

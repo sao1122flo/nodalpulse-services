@@ -161,7 +161,7 @@ def build_brief_html(
         label = _esc(_SECTION_LABELS[section_key])
         items_html += f'<div class="section-title">{label}</div>\n'
         for item in items:
-            filing_url = f"{app_url}/filing/{item['filing_id']}"
+            filing_url = item.get("source_url") or f"{app_url}/filing/{item['filing_id']}"
             items_html += f"""<div class="item">
   <div class="item-header">
     <a href="{filing_url}" class="cta">Open &#x2192;</a>
