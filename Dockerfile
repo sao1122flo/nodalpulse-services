@@ -19,6 +19,9 @@ RUN pip install uv --no-cache-dir
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+# Pin the browser cache path so install and runtime resolve to the same location
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
 # Install Playwright Chromium binary (system libs already present above)
 RUN uv run playwright install chromium
 
@@ -28,6 +31,7 @@ COPY Procfile ./
 
 ENV PYTHONPATH=/app/src
 ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
 
 # Default CMD — Railway overrides per service via Settings → Deploy → Start Command
 CMD ["python", "-m", "nodalpulse.worker"]
