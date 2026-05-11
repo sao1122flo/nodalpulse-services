@@ -1,10 +1,12 @@
 import logging
+from datetime import date
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
+from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date
 from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.queue.pg_queue import enqueue
 
@@ -126,5 +128,45 @@ async def trigger_crawl_puct(body: CrawlRequest | None = None) -> JSONResponse:
     job_id = await enqueue("crawl-puct", {"since": body.since}, priority=10)
     logger.info("Enqueued crawl-puct job %s (since=%s)", job_id, body.since)
     return JSONResponse({"job_id": job_id, "status": "queued"})
+
+
+class BriefTriggerRequest(BaseModel):
+    brief_date: str | None = None  # ISO date; defaults to today
+
+
+@app.post("/brief/trigger")
+async def trigger_brief(body: BriefTriggerRequest | None = None) -> JSONResponse:
+    """Enqueue compose-brief jobs for all active users for the given date (default: today).
+
+    Skips users already enqueued for that date, so safe to call multiple times.
+    """
+    if body is None:
+        body = BriefTriggerRequest()
+    target_date = date.fromisoformat(body.brief_date) if body.brief_date else date.today()
+
+    user_ids = await get_active_user_ids()
+    already = await get_already_enqueued_for_date(target_date)
+    enqueued = []
+    skipped = []
+    for uid in user_ids:
+        if uid in already:
+            skipped.append(str(uid))
+            continue
+        await enqueue(
+            "compose-brief",
+            {"user_id": uid, "brief_date": target_date.isoformat()},
+            priority=5,
+        )
+        enqueued.append(str(uid))
+
+    logger.info(
+        "brief/trigger: date=%s enqueued=%d skipped=%d",
+        target_date, len(enqueued), len(skipped),
+    )
+    return JSONResponse({
+        "brief_date": target_date.isoformat(),
+        "enqueued": len(enqueued),
+        "skipped": len(skipped),
+    })
 
 
