@@ -27,6 +27,7 @@ COPY src/ ./src/
 COPY Procfile ./
 
 ENV PYTHONPATH=/app/src
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Default CMD — Railway overrides per service via Settings → Deploy → Start Command
 CMD ["python", "-m", "nodalpulse.worker"]
