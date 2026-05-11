@@ -8,7 +8,7 @@ from nodalpulse.workers.compose_brief import handle_compose_brief
 from nodalpulse.workers.crawl import handle_crawl_puct
 from nodalpulse.workers.extract import handle_extract
 
-logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=__import__("sys").stdout)
 logger = logging.getLogger(__name__)
 
 HANDLERS = {

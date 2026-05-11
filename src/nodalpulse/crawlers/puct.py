@@ -32,7 +32,7 @@ FILINGS_URL = f"{BASE_URL}/search/filings/"
 DOCUMENTS_URL = f"{BASE_URL}/search/documents/"
 
 _CHICAGO = ZoneInfo("America/Chicago")
-_CONCURRENCY = 5  # max parallel HTTP requests per crawl phase
+_CONCURRENCY = 3  # max parallel HTTP requests per crawl phase
 
 _DOC_TYPE_MAP: dict[str, str] = {
     "order": "puct-order",

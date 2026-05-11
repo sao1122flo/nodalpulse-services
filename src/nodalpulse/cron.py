@@ -16,7 +16,7 @@ from nodalpulse.queue.pg_queue import enqueue
 
 logger = logging.getLogger(__name__)
 
-logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(level="INFO", format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=__import__("sys").stdout)
 
 _CHICAGO = ZoneInfo("America/Chicago")
 _CRAWL_HOUR = 5         # 05:xx CT — crawl runs 1 hour before briefs
