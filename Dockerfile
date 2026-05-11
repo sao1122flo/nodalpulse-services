@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install uv --no-cache-dir
 
 # Install Python dependencies (separate layer — only rebuilds when lockfile changes)
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev
 
 # Pin the browser cache path so install and runtime resolve to the same location
