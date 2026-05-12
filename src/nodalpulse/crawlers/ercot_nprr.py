@@ -1,17 +1,13 @@
-"""ERCOT NPRR crawler — scrapes https://www.ercot.com/mktrules/nprrs via Playwright.
+"""ERCOT NPRR crawler — scrapes https://www.ercot.com/mktrules/issues/reports/nprr/pending.
 
 ERCOT's site is protected by Incapsula WAF; httpx alone cannot pass the JS challenge.
 Playwright renders the page fully, bypasses the challenge, and extracts table rows.
 
-Document structure expected on the NPRR listing page:
-  table > tr: [NPRR #] [Title] [Submitted Date] [Effective Date] [Status]
+Document structure on the listing page (9 columns):
+  [#] [Title] [Description] [Date Posted] [Sponsor] [Urgent] [Protocol Sections] [Current Status] [Effective Date(s)]
 
-Each NPRR # links to a detail page at /mktrules/nprrs/nprr{N} which contains
-the downloadable protocol document.  We capture the first PDF on the detail page
-as the canonical document.
-
-To tune selectors after a live run, set LOG_LEVEL=DEBUG and inspect the raw
-page_content lines logged from _scrape_listing().
+Each # links to a detail page that contains the downloadable protocol document.
+We capture the first PDF on the detail page as the canonical document.
 """
 
 from __future__ import annotations
@@ -28,7 +24,7 @@ from nodalpulse.crawlers.base import BaseCrawler, RawFiling
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.ercot.com"
-LISTING_URL = f"{BASE_URL}/mktrules/nprrs"
+LISTING_URL = f"{BASE_URL}/mktrules/issues/reports/nprr/pending"
 _CHICAGO = ZoneInfo("America/Chicago")
 _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
@@ -106,9 +102,9 @@ async def _scrape_listing(page, since: date) -> list[dict]:
                 results.push({
                     nprr_number: cells[0].innerText.trim(),
                     title: cells[1] ? cells[1].innerText.trim() : '',
-                    submitted_date: cells[2] ? cells[2].innerText.trim() : '',
-                    effective_date: cells[3] ? cells[3].innerText.trim() : '',
-                    status: cells[4] ? cells[4].innerText.trim() : '',
+                    date_posted: cells[3] ? cells[3].innerText.trim() : '',
+                    status: cells[7] ? cells[7].innerText.trim() : '',
+                    effective_date: cells[8] ? cells[8].innerText.trim() : '',
                     detail_href: linkEl ? linkEl.getAttribute('href') : null,
                 });
             }
@@ -120,7 +116,7 @@ async def _scrape_listing(page, since: date) -> list[dict]:
 
     filtered = []
     for row in rows:
-        filed_at = _parse_date(row.get("submitted_date", ""))
+        filed_at = _parse_date(row.get("date_posted", ""))
         if not filed_at:
             continue
         filed_date = date.fromisoformat(filed_at[:10])
@@ -179,7 +175,7 @@ async def _fetch_nprr_document(page, row: dict) -> RawFiling | None:
         file_ext="pdf",
         metadata={
             "nprr_number": nprr_num,
-            "submitted_date": row.get("submitted_date", ""),
+            "date_posted": row.get("date_posted", ""),
             "effective_date": row.get("effective_date", ""),
             "status": row.get("status", ""),
             "pdf_url": pdf_url,

@@ -1,11 +1,12 @@
-"""ERCOT Market Notices crawler — scrapes https://www.ercot.com/services/comm/mkt_notices.
+"""ERCOT Market Notices crawler — scrapes https://www.ercot.com/services/comm/mkt_notices/notices.
 
 Same Playwright-based approach as ercot_nprr.py since the site is Incapsula-protected.
 
-Expected page structure:
-  table > tr: [Date] [Market Notice ID] [Subject]
+Page structure (4 columns):
+  [Date & Time] [Notice (text + link)] [Type] [Status]
 
-Each row links directly to a PDF or to a detail page that contains a PDF link.
+Notice ID is extracted from the link href (e.g. /services/comm/mkt_notices/M-D013026-01).
+Each row links to a detail page; we find the first PDF on that page.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from nodalpulse.crawlers.base import BaseCrawler, RawFiling
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.ercot.com"
-LISTING_URL = f"{BASE_URL}/services/comm/mkt_notices"
+LISTING_URL = f"{BASE_URL}/services/comm/mkt_notices/notices"
 _CHICAGO = ZoneInfo("America/Chicago")
 _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
@@ -84,11 +85,13 @@ async def _scrape_listing(page, since: date) -> list[dict]:
                 const cells = tr.querySelectorAll('td');
                 if (cells.length < 2) continue;
                 const linkEl = tr.querySelector('a[href]');
+                const href = linkEl ? linkEl.getAttribute('href') : null;
+                const notice_id = href ? href.split('/').pop() : '';
                 results.push({
                     date_raw: cells[0] ? cells[0].innerText.trim() : '',
-                    notice_id: cells[1] ? cells[1].innerText.trim() : '',
-                    subject: cells[2] ? cells[2].innerText.trim() : '',
-                    href: linkEl ? linkEl.getAttribute('href') : null,
+                    notice_id: notice_id,
+                    subject: cells[1] ? cells[1].innerText.trim() : '',
+                    href: href,
                 });
             }
         }
@@ -168,7 +171,7 @@ def _clean_notice_id(raw: str) -> str:
 
 
 def _parse_date(raw: str) -> str | None:
-    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%B %d, %Y"):
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%B %d, %Y", "%B %d, %Y %I:%M:%S %p"):
         try:
             naive = datetime.strptime(raw.strip(), fmt)
             return naive.replace(tzinfo=_CHICAGO).astimezone(UTC).isoformat()
