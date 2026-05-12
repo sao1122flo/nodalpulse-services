@@ -132,11 +132,22 @@ async def _fetch_notice_document(page, row: dict) -> RawFiling | None:
     else:
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass
             pdf_url = await page.evaluate("""() => {
                 const links = Array.from(document.querySelectorAll('a[href]'));
-                const pdf = links.find(a => a.href.toLowerCase().endsWith('.pdf'));
+                // Match .pdf anywhere in URL (handles query-string variants and /files/docs/ paths)
+                const pdf = links.find(a => a.href.toLowerCase().includes('.pdf'));
                 return pdf ? pdf.href : null;
             }""")
+            if pdf_url:
+                logger.info("MN %s: found PDF at %s", row.get("notice_id"), pdf_url)
+            else:
+                # Log page content snippet to help diagnose missing PDFs
+                snippet = await page.evaluate("() => document.body ? document.body.innerText.slice(0, 400) : ''")
+                logger.info("MN %s: no PDF on detail page — content: %s", row.get("notice_id"), snippet)
         except Exception:
             logger.warning("MN %s: detail page failed %s", row.get("notice_id"), url)
             return None
