@@ -61,10 +61,8 @@ class ErcotMarketNoticesCrawler(BaseCrawler):
 
 
 async def _scrape_listing(page, since: date) -> list[dict]:
-    today = date.today()
-    url = f"{LISTING_URL}?sd={since.isoformat()}&ed={today.isoformat()}&pageSize=25&order=down"
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
         try:
             await page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:

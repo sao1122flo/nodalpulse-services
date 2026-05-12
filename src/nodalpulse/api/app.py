@@ -153,43 +153,61 @@ async def discover_ercot_urls() -> JSONResponse:
         ctx = await browser.new_context(user_agent=_UA)
         page = await ctx.new_page()
 
-        # Probe 1: archives page — this is where formal M-ID market notices likely live
-        archives_url = "https://www.ercot.com/services/comm/archives"
+        # Probe 1: all row dates in archives (no params) — tells us the default date span
+        archives_url = "https://www.ercot.com/services/comm/mkt_notices/archives"
         try:
             await page.goto(archives_url, wait_until="domcontentloaded", timeout=30_000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=15_000)
             except Exception:
                 pass
+            await page.wait_for_selector("table tr td", timeout=30_000)
             archives_info = await page.evaluate("""() => {
-                const tables = Array.from(document.querySelectorAll('table'));
-                const tableInfo = tables.map(t => ({
-                    rows: t.querySelectorAll('tr').length,
-                    headers: Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim()),
-                    first_rows: Array.from(t.querySelectorAll('tr')).slice(0, 4).map(tr => ({
-                        cells: Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim().slice(0, 80)),
-                        has_anchor: !!tr.querySelector('a[href]'),
-                        anchor_href: tr.querySelector('a[href]') ? tr.querySelector('a[href]').getAttribute('href') : null,
-                    })),
-                }));
-                return {
-                    title: document.title,
-                    url: location.href,
-                    tables: tableInfo,
-                    body_snippet: document.body ? document.body.innerText.slice(0, 600) : '',
-                    forms: Array.from(document.querySelectorAll('form')).map(f => ({
-                        action: f.getAttribute('action'),
-                        inputs: Array.from(f.querySelectorAll('input,select')).map(i => ({
-                            name: i.getAttribute('name'), type: i.type, value: i.value
-                        })),
-                    })),
-                };
+                const table = document.querySelector('table');
+                if (!table) return {rows: 0, all_dates: []};
+                const trs = Array.from(table.querySelectorAll('tr'));
+                const all_rows = trs.slice(1).map(tr => {
+                    const cells = tr.querySelectorAll('td');
+                    const linkEl = tr.querySelector('a[href]');
+                    return {
+                        date: cells[0] ? cells[0].innerText.trim() : '',
+                        id_subject: cells[1] ? cells[1].innerText.trim().slice(0, 80) : '',
+                        href: linkEl ? linkEl.getAttribute('href') : null,
+                    };
+                });
+                return {url: location.href, total_rows: trs.length - 1, rows: all_rows};
             }""")
-            results["archives"] = archives_info
+            results["archives_all_rows"] = archives_info
         except Exception as exc:
-            results["archives"] = {"url": archives_url, "error": str(exc)[:300]}
+            results["archives_all_rows"] = {"url": archives_url, "error": str(exc)[:300]}
 
-        # Probe 2: click first data row on notices page to see if it navigates anywhere
+        # Probe 2: known M- notice detail page — check for PDF links
+        for notice_id in ["M-D013026-01", "W-A051126-01"]:
+            detail_url = f"https://www.ercot.com/services/comm/mkt_notices/{notice_id}"
+            try:
+                await page.goto(detail_url, wait_until="domcontentloaded", timeout=30_000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15_000)
+                except Exception:
+                    pass
+                info = await page.evaluate("""() => {
+                    const links = Array.from(document.querySelectorAll('a[href]'));
+                    const pdf_links = links.filter(a => a.href.toLowerCase().includes('.pdf')).map(a => a.href);
+                    const all_links = links.map(a => ({text: a.innerText.trim().slice(0, 60), href: a.getAttribute('href')}))
+                                          .filter(a => a.href && !a.href.startsWith('javascript'));
+                    return {
+                        url: location.href,
+                        title: document.title,
+                        pdf_links: pdf_links,
+                        all_links: all_links.slice(0, 20),
+                        body_snippet: document.body ? document.body.innerText.slice(0, 600) : '',
+                    };
+                }""")
+                results[f"notice_{notice_id}"] = info
+            except Exception as exc:
+                results[f"notice_{notice_id}"] = {"url": detail_url, "error": str(exc)[:200]}
+
+        # Probe 3 (kept for reference): click first row on notices page
         mn_url = "https://www.ercot.com/services/comm/mkt_notices/notices"
         try:
             await page.goto(mn_url, wait_until="domcontentloaded", timeout=30_000)
