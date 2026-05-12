@@ -153,7 +153,43 @@ async def discover_ercot_urls() -> JSONResponse:
         ctx = await browser.new_context(user_agent=_UA)
         page = await ctx.new_page()
 
-        # MN row HTML probe — navigate, then dump first 4 data row outerHTML
+        # Probe 1: archives page — this is where formal M-ID market notices likely live
+        archives_url = "https://www.ercot.com/services/comm/archives"
+        try:
+            await page.goto(archives_url, wait_until="domcontentloaded", timeout=30_000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass
+            archives_info = await page.evaluate("""() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                const tableInfo = tables.map(t => ({
+                    rows: t.querySelectorAll('tr').length,
+                    headers: Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim()),
+                    first_rows: Array.from(t.querySelectorAll('tr')).slice(0, 4).map(tr => ({
+                        cells: Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim().slice(0, 80)),
+                        has_anchor: !!tr.querySelector('a[href]'),
+                        anchor_href: tr.querySelector('a[href]') ? tr.querySelector('a[href]').getAttribute('href') : null,
+                    })),
+                }));
+                return {
+                    title: document.title,
+                    url: location.href,
+                    tables: tableInfo,
+                    body_snippet: document.body ? document.body.innerText.slice(0, 600) : '',
+                    forms: Array.from(document.querySelectorAll('form')).map(f => ({
+                        action: f.getAttribute('action'),
+                        inputs: Array.from(f.querySelectorAll('input,select')).map(i => ({
+                            name: i.getAttribute('name'), type: i.type, value: i.value
+                        })),
+                    })),
+                };
+            }""")
+            results["archives"] = archives_info
+        except Exception as exc:
+            results["archives"] = {"url": archives_url, "error": str(exc)[:300]}
+
+        # Probe 2: click first data row on notices page to see if it navigates anywhere
         mn_url = "https://www.ercot.com/services/comm/mkt_notices/notices"
         try:
             await page.goto(mn_url, wait_until="domcontentloaded", timeout=30_000)
@@ -162,28 +198,13 @@ async def discover_ercot_urls() -> JSONResponse:
             except Exception:
                 pass
             await page.wait_for_selector("table tr td", timeout=30_000)
-            mn_info = await page.evaluate("""() => {
-                const tables = Array.from(document.querySelectorAll('table'));
-                const dataTable = tables.reduce((a, b) =>
-                    b.querySelectorAll('tr').length > a.querySelectorAll('tr').length ? b : a, tables[0]);
-                const rows = Array.from(dataTable.querySelectorAll('tr')).slice(0, 5);
-                return rows.map(tr => ({
-                    outerHTML: tr.outerHTML.slice(0, 1200),
-                    cells_text: Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim().slice(0, 80)),
-                    has_anchor: !!tr.querySelector('a[href]'),
-                    anchor_href: tr.querySelector('a[href]') ? tr.querySelector('a[href]').getAttribute('href') : null,
-                    tr_attrs: {
-                        onclick: tr.getAttribute('onclick'),
-                        ng_click: tr.getAttribute('ng-click'),
-                        data_id: tr.getAttribute('data-id'),
-                        data_href: tr.getAttribute('data-href'),
-                        class: tr.getAttribute('class'),
-                    },
-                }));
-            }""")
-            results["mn_rows"] = {"url": page.url, "rows": mn_info}
+            url_before = page.url
+            await page.locator("table tr td").first.click()
+            await page.wait_for_timeout(3000)
+            url_after = page.url
+            results["mn_click"] = {"url_before": url_before, "url_after": url_after, "navigated": url_before != url_after}
         except Exception as exc:
-            results["mn_rows"] = {"url": mn_url, "error": str(exc)[:300]}
+            results["mn_click"] = {"error": str(exc)[:300]}
 
     return JSONResponse(results)
 
