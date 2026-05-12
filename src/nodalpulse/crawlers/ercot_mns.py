@@ -1,12 +1,13 @@
-"""ERCOT Market Notices crawler — scrapes https://www.ercot.com/services/comm/mkt_notices/notices.
+"""ERCOT Market Notices crawler — scrapes https://www.ercot.com/services/comm/mkt_notices/archives.
 
 Same Playwright-based approach as ercot_nprr.py since the site is Incapsula-protected.
 
-Page structure (4 columns):
-  [Date & Time] [Notice (text + link)] [Type] [Status]
+Page structure (3 columns):
+  [Date] [Notice ID + Subject text (linked)] [empty]
 
-Notice ID is extracted from the link href (e.g. /services/comm/mkt_notices/M-D013026-01).
-Each row links to a detail page; we find the first PDF on that page.
+Date format: MM/DD/YYYY (e.g. "05/11/2026").
+Notice ID is the first token of the Subject cell (e.g. "M-A051126-01").
+Each row links to /services/comm/mkt_notices/{ID}; we find the first PDF on that detail page.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from nodalpulse.crawlers.base import BaseCrawler, RawFiling
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.ercot.com"
-LISTING_URL = f"{BASE_URL}/services/comm/mkt_notices/notices"
+LISTING_URL = f"{BASE_URL}/services/comm/mkt_notices/archives"
 _CHICAGO = ZoneInfo("America/Chicago")
 _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
@@ -60,16 +61,17 @@ class ErcotMarketNoticesCrawler(BaseCrawler):
 
 
 async def _scrape_listing(page, since: date) -> list[dict]:
+    today = date.today()
+    url = f"{LISTING_URL}?sd={since.isoformat()}&ed={today.isoformat()}&pageSize=25&order=down"
     try:
-        await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
-        # Wait for Incapsula challenge to complete and redirect to the real page
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         try:
             await page.wait_for_load_state("networkidle", timeout=20_000)
         except Exception:
-            pass  # non-fatal; proceed to selector check
+            pass
         await page.wait_for_selector("table tr", timeout=60_000)
     except Exception:
-        logger.exception("ERCOT MN: failed to load listing page")
+        logger.exception("ERCOT MN: failed to load archives page")
         try:
             logger.info("ERCOT MN: page url=%s content=%s", page.url, (await page.content())[:800])
         except Exception:
@@ -86,11 +88,14 @@ async def _scrape_listing(page, since: date) -> list[dict]:
                 if (cells.length < 2) continue;
                 const linkEl = tr.querySelector('a[href]');
                 const href = linkEl ? linkEl.getAttribute('href') : null;
-                const notice_id = href ? href.split('/').pop() : '';
+                const full_subject = cells[1] ? cells[1].innerText.trim() : '';
+                const space_idx = full_subject.indexOf(' ');
+                const notice_id = space_idx > 0 ? full_subject.slice(0, space_idx) : full_subject;
+                const subject = space_idx > 0 ? full_subject.slice(space_idx + 1).trim() : full_subject;
                 results.push({
                     date_raw: cells[0] ? cells[0].innerText.trim() : '',
                     notice_id: notice_id,
-                    subject: cells[1] ? cells[1].innerText.trim() : '',
+                    subject: subject,
                     href: href,
                 });
             }
