@@ -80,9 +80,18 @@ async def _scrape_listing(page, since: date) -> list[dict]:
     """Load the NPRR listing and extract rows since `since`. Reuses caller's page."""
     try:
         await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
-        await page.wait_for_selector("table tr", timeout=20_000)
+        # Wait for Incapsula challenge to complete and redirect to the real page
+        try:
+            await page.wait_for_load_state("networkidle", timeout=20_000)
+        except Exception:
+            pass  # non-fatal; proceed to selector check
+        await page.wait_for_selector("table tr", timeout=60_000)
     except Exception:
         logger.exception("ERCOT NPRR: failed to load listing page")
+        try:
+            logger.info("ERCOT NPRR: page url=%s content=%s", page.url, (await page.content())[:800])
+        except Exception:
+            pass
         return []
 
     rows = await page.evaluate("""() => {
