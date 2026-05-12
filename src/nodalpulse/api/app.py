@@ -147,44 +147,43 @@ async def discover_ercot_urls() -> JSONResponse:
     _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
 
-    candidates = [
-        ("nprr", "https://www.ercot.com/mktrules/issues/reports/nprr/pending"),
-        ("nprr_old", "https://www.ercot.com/mktrules/nprrs"),
-        ("mn", "https://www.ercot.com/services/comm/notices"),
-        ("mn_old", "https://www.ercot.com/services/comm/mkt_notices"),
-    ]
-
     results = {}
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
         ctx = await browser.new_context(user_agent=_UA)
         page = await ctx.new_page()
 
-        for label, url in candidates:
+        # MN row HTML probe — navigate, then dump first 4 data row outerHTML
+        mn_url = "https://www.ercot.com/services/comm/mkt_notices/notices"
+        try:
+            await page.goto(mn_url, wait_until="domcontentloaded", timeout=30_000)
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=15_000)
-                except Exception:
-                    pass
-                info = await page.evaluate("""() => {
-                    const tables = document.querySelectorAll('table');
-                    const tableInfo = Array.from(tables).map(t => ({
-                        rows: t.querySelectorAll('tr').length,
-                        headers: Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim()),
-                        first_row: Array.from(t.querySelectorAll('tr:nth-child(2) td')).map(td => td.innerText.trim().slice(0, 60)),
-                    }));
-                    return {
-                        title: document.title,
-                        tables: tableInfo,
-                        body_snippet: document.body ? document.body.innerText.slice(0, 500) : '',
-                    };
-                }""")
-                results[label] = {"url": page.url, **info}
-            except Exception as exc:
-                results[label] = {"url": url, "error": str(exc)[:200]}
-
-        await browser.close()
+                await page.wait_for_load_state("networkidle", timeout=15_000)
+            except Exception:
+                pass
+            await page.wait_for_selector("table tr td", timeout=30_000)
+            mn_info = await page.evaluate("""() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                const dataTable = tables.reduce((a, b) =>
+                    b.querySelectorAll('tr').length > a.querySelectorAll('tr').length ? b : a, tables[0]);
+                const rows = Array.from(dataTable.querySelectorAll('tr')).slice(0, 5);
+                return rows.map(tr => ({
+                    outerHTML: tr.outerHTML.slice(0, 1200),
+                    cells_text: Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim().slice(0, 80)),
+                    has_anchor: !!tr.querySelector('a[href]'),
+                    anchor_href: tr.querySelector('a[href]') ? tr.querySelector('a[href]').getAttribute('href') : null,
+                    tr_attrs: {
+                        onclick: tr.getAttribute('onclick'),
+                        ng_click: tr.getAttribute('ng-click'),
+                        data_id: tr.getAttribute('data-id'),
+                        data_href: tr.getAttribute('data-href'),
+                        class: tr.getAttribute('class'),
+                    },
+                }));
+            }""")
+            results["mn_rows"] = {"url": page.url, "rows": mn_info}
+        except Exception as exc:
+            results["mn_rows"] = {"url": mn_url, "error": str(exc)[:300]}
 
     return JSONResponse(results)
 
