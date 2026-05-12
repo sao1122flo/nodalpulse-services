@@ -81,7 +81,12 @@ async def get_last_brief_date(user_id: str) -> date | None:
 
 
 async def get_filings_for_brief(since: datetime, until: datetime) -> list[dict]:
-    """All filings+extractions in the window, excluding haiku-irrelevant ones."""
+    """All filings+extractions in the window, excluding haiku-irrelevant ones.
+
+    Windows by created_at (crawl time) rather than filed_at (document date) so
+    that filings crawled today are always included regardless of their publication
+    date (e.g. ERCOT notices dated yesterday that arrived in today's crawl).
+    """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
@@ -99,8 +104,8 @@ async def get_filings_for_brief(since: datetime, until: datetime) -> list[dict]:
                     e.haiku_verdict
                 FROM filings f
                 JOIN extractions e ON e.filing_id = f.id
-                WHERE f.filed_at >= :since
-                  AND f.filed_at < :until
+                WHERE f.created_at >= :since
+                  AND f.created_at < :until
                   AND e.haiku_verdict IS DISTINCT FROM 'irrelevant'
                 ORDER BY f.filed_at DESC
             """),

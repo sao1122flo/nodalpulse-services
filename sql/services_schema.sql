@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS filings (
 
 CREATE INDEX IF NOT EXISTS filings_source_filed_at_idx ON filings (source_id, filed_at DESC);
 CREATE INDEX IF NOT EXISTS filings_filed_at_idx        ON filings (filed_at DESC);
+CREATE INDEX IF NOT EXISTS filings_created_at_idx      ON filings (created_at DESC);
 CREATE INDEX IF NOT EXISTS filings_doc_type_idx        ON filings (doc_type);
 
 -- ─────────────────────────────────────────────
