@@ -139,6 +139,56 @@ async def trigger_crawl_ercot(body: CrawlRequest | None = None) -> JSONResponse:
     return JSONResponse({"job_id": job_id, "status": "queued"})
 
 
+@app.get("/discover/ercot")
+async def discover_ercot_urls() -> JSONResponse:
+    """Probe candidate ERCOT URLs with Playwright and return page structure info."""
+    from playwright.async_api import async_playwright
+
+    _BROWSER_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+    _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
+
+    candidates = [
+        ("nprr", "https://www.ercot.com/mktrules/issues/reports/nprr/pending"),
+        ("nprr_old", "https://www.ercot.com/mktrules/nprrs"),
+        ("mn", "https://www.ercot.com/services/comm/notices"),
+        ("mn_old", "https://www.ercot.com/services/comm/mkt_notices"),
+    ]
+
+    results = {}
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
+        ctx = await browser.new_context(user_agent=_UA)
+        page = await ctx.new_page()
+
+        for label, url in candidates:
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15_000)
+                except Exception:
+                    pass
+                info = await page.evaluate("""() => {
+                    const tables = document.querySelectorAll('table');
+                    const tableInfo = Array.from(tables).map(t => ({
+                        rows: t.querySelectorAll('tr').length,
+                        headers: Array.from(t.querySelectorAll('th')).map(th => th.innerText.trim()),
+                        first_row: Array.from(t.querySelectorAll('tr:nth-child(2) td')).map(td => td.innerText.trim().slice(0, 60)),
+                    }));
+                    return {
+                        title: document.title,
+                        tables: tableInfo,
+                        body_snippet: document.body ? document.body.innerText.slice(0, 500) : '',
+                    };
+                }""")
+                results[label] = {"url": page.url, **info}
+            except Exception as exc:
+                results[label] = {"url": url, "error": str(exc)[:200]}
+
+        await browser.close()
+
+    return JSONResponse(results)
+
+
 class BriefTriggerRequest(BaseModel):
     brief_date: str | None = None  # ISO date; defaults to today
 
