@@ -1,14 +1,16 @@
 import logging
 from datetime import date
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date
+from nodalpulse.api.auth import verify_bearer
+from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
 from nodalpulse.db.engine import AsyncSessionLocal
-from nodalpulse.queue.pg_queue import enqueue
+from nodalpulse.db.extractions import get_filing
+from nodalpulse.queue.pg_queue import enqueue, enqueue_idempotent
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="nodalpulse-services", version="0.1.0")
@@ -180,3 +182,66 @@ async def trigger_brief(body: BriefTriggerRequest | None = None) -> JSONResponse
     })
 
 
+class RecomposeRequest(BaseModel):
+    user_id: str        # UUID string
+    brief_date: str     # ISO date, e.g. "2026-05-12"
+    idempotency_key: str
+
+
+@app.post("/brief/recompose", dependencies=[Depends(verify_bearer)])
+async def recompose_brief(body: RecomposeRequest) -> JSONResponse:
+    """Enqueue a compose-brief job for a single user (admin action).
+
+    Protected by bearer token. Idempotent — repeated calls with the same
+    idempotency_key return the original job_id with status "already_queued".
+    """
+    if not await get_user_exists(body.user_id):
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    job_id, created = await enqueue_idempotent(
+        "compose-brief",
+        {"user_id": body.user_id, "brief_date": body.brief_date},
+        idempotency_key=body.idempotency_key,
+        priority=10,
+    )
+    logger.info(
+        "brief/recompose: user=%s date=%s job=%s created=%s",
+        body.user_id, body.brief_date, job_id, created,
+    )
+    status_code = 201 if created else 200
+    return JSONResponse(
+        {"job_id": job_id, "status": "queued" if created else "already_queued"},
+        status_code=status_code,
+    )
+
+
+class RefreshExtractionRequest(BaseModel):
+    filing_id: str      # UUID string
+    idempotency_key: str
+
+
+@app.post("/extraction/refresh", dependencies=[Depends(verify_bearer)])
+async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
+    """Enqueue a refresh-extraction job for a single filing (admin action).
+
+    Protected by bearer token. The handler fetches r2_key and doc_type from the
+    DB itself — the caller only needs the filing_id. Idempotent via idempotency_key.
+    """
+    if not await get_filing(body.filing_id):
+        return JSONResponse({"error": "filing not found"}, status_code=404)
+
+    job_id, created = await enqueue_idempotent(
+        "refresh-extraction",
+        {"filing_id": body.filing_id},
+        idempotency_key=body.idempotency_key,
+        priority=10,
+    )
+    logger.info(
+        "extraction/refresh: filing=%s job=%s created=%s",
+        body.filing_id, job_id, created,
+    )
+    status_code = 201 if created else 200
+    return JSONResponse(
+        {"job_id": job_id, "status": "queued" if created else "already_queued"},
+        status_code=status_code,
+    )

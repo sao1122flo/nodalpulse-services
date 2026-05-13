@@ -32,6 +32,46 @@ async def enqueue(kind: str, payload: dict[str, Any], priority: int = 0) -> str:
         return job_id
 
 
+async def enqueue_idempotent(
+    kind: str,
+    payload: dict[str, Any],
+    idempotency_key: str,
+    priority: int = 0,
+) -> tuple[str, bool]:
+    """Insert a job unless one with the same idempotency_key already exists.
+
+    Returns (job_id, created) — created=False means the key was already present
+    and the existing job_id is returned. First-write-wins; no 409 raised.
+    """
+    async with AsyncSessionLocal() as session:
+        existing = await session.execute(
+            text("SELECT id::text FROM jobs WHERE idempotency_key = :key"),
+            {"key": idempotency_key},
+        )
+        row = existing.first()
+        if row:
+            return row[0], False
+
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO jobs (kind, payload, priority, idempotency_key)
+                VALUES (:kind, CAST(:payload AS JSONB), :priority, :key)
+                RETURNING id::text
+                """
+            ),
+            {
+                "kind": kind,
+                "payload": json.dumps(payload),
+                "priority": priority,
+                "key": idempotency_key,
+            },
+        )
+        job_id = result.scalar_one()
+        await session.commit()
+        return job_id, True
+
+
 async def dequeue(kind: str, lock_seconds: int = 900) -> dict[str, Any] | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(

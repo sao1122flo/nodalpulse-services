@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     brevo_sender_name: str = "NodalPulse"
     app_url: str = "https://app.nodalpulse.com"
 
+    services_api_key: str = ""
+
     sentry_dsn: str = ""
     log_level: str = "INFO"
     environment: str = "development"

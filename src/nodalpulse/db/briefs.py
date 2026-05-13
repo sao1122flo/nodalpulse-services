@@ -22,6 +22,16 @@ def _pg_uuid_array(uuids: list[str]) -> str:
     return "'{" + ",".join(safe) + "}'::uuid[]"
 
 
+async def get_user_exists(user_id: str) -> bool:
+    """True if the user UUID exists in the users table, regardless of subscription state."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT 1 FROM users WHERE id = CAST(:uid AS uuid)"),
+            {"uid": user_id},
+        )
+        return result.first() is not None
+
+
 async def get_active_user_ids() -> list[str]:
     """Return user IDs eligible for daily briefs (entitlement + active subscription + profile)."""
     async with AsyncSessionLocal() as session:
