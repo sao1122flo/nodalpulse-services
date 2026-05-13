@@ -94,7 +94,7 @@ async def dequeue(kind: str, lock_seconds: int = 900) -> dict[str, Any] | None:
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                 )
-                RETURNING id::text, kind, payload, attempts
+                RETURNING id::text, kind, payload, attempts, max_attempts
                 """
             ),
             {"worker_id": WORKER_ID, "lock_interval": timedelta(seconds=lock_seconds), "kind": kind},
@@ -169,4 +169,4 @@ async def run_worker(kind: str, handler: Any, poll_interval: float = 5.0) -> Non
         except Exception as exc:
             ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
             logger.exception("Job %s failed: %s", job["id"], exc)
-            await fail(job["id"], str(exc), ms)
+            await fail(job["id"], str(exc), ms, max_attempts=job["max_attempts"])
