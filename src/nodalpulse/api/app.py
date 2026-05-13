@@ -1,5 +1,5 @@
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -245,3 +245,73 @@ async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
         {"job_id": job_id, "status": "queued" if created else "already_queued"},
         status_code=status_code,
     )
+
+
+# ── admin: LLM cost aggregations ─────────────────────────────────────────────
+
+@app.get("/admin/llm-costs", dependencies=[Depends(verify_bearer)])
+async def llm_costs(days: int = 7) -> JSONResponse:
+    """Daily LLM cost aggregations by pipeline stage and model.
+
+    ?days=N caps the window to N days back from now (1–90, default 7).
+    """
+    days = max(1, min(days, 90))
+
+    async with AsyncSessionLocal() as session:
+        by_day_result = await session.execute(
+            text("""
+                SELECT
+                    date_trunc('day', created_at)::date            AS day,
+                    pipeline_stage                                  AS stage,
+                    model,
+                    pricing_version,
+                    COUNT(*)::int                                   AS calls,
+                    COALESCE(SUM(input_tokens), 0)::int             AS input_tokens,
+                    COALESCE(SUM(output_tokens), 0)::int            AS output_tokens,
+                    COALESCE(SUM(cache_read_input_tokens), 0)::int  AS cache_read_input_tokens,
+                    ROUND(COALESCE(SUM(cost_usd_estimate), 0), 6)   AS cost_usd
+                FROM llm_calls
+                WHERE created_at >= NOW() - (:days * INTERVAL '1 day')
+                GROUP BY 1, 2, 3, 4
+                ORDER BY 1 DESC, 2, 3
+            """),
+            {"days": days},
+        )
+        totals_result = await session.execute(
+            text("""
+                SELECT
+                    COUNT(*)::int                                    AS calls,
+                    ROUND(COALESCE(SUM(cost_usd_estimate), 0), 6)   AS cost_usd
+                FROM llm_calls
+                WHERE created_at >= NOW() - (:days * INTERVAL '1 day')
+            """),
+            {"days": days},
+        )
+
+    rows = by_day_result.mappings().all()
+    totals_row = totals_result.mappings().first()
+
+    return JSONResponse({
+        "range": {
+            "from": (date.today() - timedelta(days=days - 1)).isoformat(),
+            "to": date.today().isoformat(),
+        },
+        "totals": {
+            "cost_usd": float(totals_row["cost_usd"] or 0) if totals_row else 0.0,
+            "calls": int(totals_row["calls"] or 0) if totals_row else 0,
+        },
+        "by_day": [
+            {
+                "day": str(row["day"]),
+                "stage": row["stage"],
+                "model": row["model"],
+                "pricing_version": row["pricing_version"],
+                "calls": row["calls"],
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "cache_read_input_tokens": row["cache_read_input_tokens"],
+                "cost_usd": float(row["cost_usd"] or 0),
+            }
+            for row in rows
+        ],
+    })

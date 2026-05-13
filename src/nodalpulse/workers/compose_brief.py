@@ -302,7 +302,7 @@ async def handle_compose_brief(payload: dict) -> dict:
     )
 
     # LLM compose — tool_choice forces structured output
-    composed = await llm_compose(_COMPOSE_SYSTEM, user_prompt, model=COMPOSER_MODEL)
+    composed = await llm_compose(_COMPOSE_SYSTEM, user_prompt, model=COMPOSER_MODEL, user_id=user_id)
     logger.info("compose: expected %d items, got %d", n_expected, len(composed))
 
     # Count parity check — retry once with explicit filing_id list
@@ -318,7 +318,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             f"Required filing_ids: {expected_ids}\n\n"
             + user_prompt
         )
-        composed = await llm_compose(_COMPOSE_SYSTEM, retry_prompt, model=COMPOSER_MODEL)
+        composed = await llm_compose(_COMPOSE_SYSTEM, retry_prompt, model=COMPOSER_MODEL, user_id=user_id)
 
     composed_by_id = {c["filing_id"]: c for c in composed}
 

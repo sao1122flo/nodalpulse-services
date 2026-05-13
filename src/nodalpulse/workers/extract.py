@@ -112,7 +112,7 @@ async def handle_extract(payload: dict) -> dict:
         return {"filing_id": filing_id, "skipped": True, "reason": "no_text"}
 
     # Haiku triage — fast/cheap pass before running Sonnet
-    triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}")
+    triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id)
     try:
         haiku_verdict = _parse_json(triage_raw).get("verdict", "uncertain")
     except Exception:
@@ -136,6 +136,7 @@ async def handle_extract(payload: dict) -> dict:
     extract_raw = await llm_extract(
         _extract_system_for_doc_type(doc_type),
         f"Document type: {doc_type}\n\n{text[:40_000]}",
+        filing_id=filing_id,
     )
     try:
         extracted = _parse_json(extract_raw)
