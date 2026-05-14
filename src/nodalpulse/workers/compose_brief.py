@@ -23,6 +23,7 @@ from nodalpulse.email.templates import (
     build_quiet_day_html,
 )
 from nodalpulse.llm.client import compose as llm_compose
+from nodalpulse.llm.taxonomy import TEXAS_ELECTRICITY_TAXONOMY
 from nodalpulse.settings import settings
 from nodalpulse.storage import r2
 
@@ -55,6 +56,8 @@ Hard rules:
 - If an input record has no claims, write "Filing summary unavailable; see source." + citation.
 - You MUST render ALL input filings — every filing_id must appear in the output.\
 """
+
+_COMPOSE_SYSTEM_FULL = _COMPOSE_SYSTEM + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY
 
 
 # ── scoring ───────────────────────────────────────────────────────────────────
@@ -302,7 +305,7 @@ async def handle_compose_brief(payload: dict) -> dict:
     )
 
     # LLM compose — tool_choice forces structured output
-    composed = await llm_compose(_COMPOSE_SYSTEM, user_prompt, model=COMPOSER_MODEL, user_id=user_id)
+    composed = await llm_compose(_COMPOSE_SYSTEM_FULL, user_prompt, model=COMPOSER_MODEL, user_id=user_id)
     logger.info("compose: expected %d items, got %d", n_expected, len(composed))
 
     # Count parity check — retry once with explicit filing_id list
@@ -318,7 +321,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             f"Required filing_ids: {expected_ids}\n\n"
             + user_prompt
         )
-        composed = await llm_compose(_COMPOSE_SYSTEM, retry_prompt, model=COMPOSER_MODEL, user_id=user_id)
+        composed = await llm_compose(_COMPOSE_SYSTEM_FULL, retry_prompt, model=COMPOSER_MODEL, user_id=user_id)
 
     composed_by_id = {c["filing_id"]: c for c in composed}
 

@@ -1,0 +1,50 @@
+ERCOT Market Notice MN-2026-05-0147
+Category: Market Operations
+Issued: May 13, 2026
+Priority: NORMAL
+
+SUBJECT: Settlement Invoice Correction — April 2026 Final Settlement
+
+ERCOT is issuing this Market Notice to inform Qualified Scheduling Entities
+(QSEs) and other affected market participants of a correction to the April 2026
+Final Settlement invoices that will be reissued on May 20, 2026.
+
+I. DESCRIPTION OF ISSUE
+
+ERCOT identified a calculation error in the Non-Spinning Reserve (Non-Spin)
+settlement for operating hours 0200-0600 Central Time on April 3, 4, and 5,
+2026. The error affects 47 QSEs that provided Non-Spin or ERCOT Contingency
+Reserve Service (ECRS) during those hours.
+
+The RRSN settlement calculation incorrectly applied a 4-hour performance
+evaluation period rather than the correct 2-hour performance period specified in
+Section 6.5.9 of the Nodal Operating Protocols for those operating hours.
+This error resulted in overpayments to QSEs with high Non-Spin performance scores
+and underpayments to QSEs with lower performance scores during the affected
+intervals. The net market-wide settlement error is approximately $2.3 million.
+
+II. CORRECTIVE ACTION
+
+ERCOT will reprocess the April 2026 Final Settlement for the affected hours and
+issue corrected invoices to all 47 affected QSEs. QSEs that were overpaid will
+see a debit on their corrected invoice; QSEs that were underpaid will see a
+credit. Net correction amounts range from approximately -$180,000 to +$95,000
+across the affected entities.
+
+III. TIMELINE
+
+- Corrected invoices issued to affected QSEs: May 20, 2026
+- Payment adjustment via wire transfer processed by ERCOT: May 27, 2026
+- Dispute deadline for corrected April Final Settlement invoices: June 10, 2026
+
+IV. ADDITIONAL INFORMATION
+
+QSEs wishing to verify their specific correction amounts may contact the ERCOT
+Market Operations Center. ERCOT will post the list of affected QSEs and their
+correction amounts (in aggregate, without individual identification) to the ERCOT
+MIS portal no later than May 16, 2026.
+
+Contact: ERCOT Market Operations Center
+Email: marketops@ercot.com
+Phone: 512-248-3000
+Hours: 24 hours / 7 days

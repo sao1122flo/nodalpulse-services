@@ -13,6 +13,7 @@ from selectolax.parser import HTMLParser
 from nodalpulse.db.extractions import get_filing, insert_extraction
 from nodalpulse.llm.client import classify
 from nodalpulse.llm.client import extract as llm_extract
+from nodalpulse.llm.taxonomy import TEXAS_ELECTRICITY_TAXONOMY
 from nodalpulse.storage import r2
 
 logger = logging.getLogger(__name__)
@@ -88,10 +89,12 @@ Extract structured information from the document. Respond with JSON only, no mar
 
 def _extract_system_for_doc_type(doc_type: str) -> str:
     if doc_type == "ercot-mn":
-        return _EXTRACT_SYSTEM_ERCOT_MN
-    if doc_type.startswith("ercot-"):
-        return _EXTRACT_SYSTEM_ERCOT_NPRR
-    return _EXTRACT_SYSTEM_PUCT
+        base = _EXTRACT_SYSTEM_ERCOT_MN
+    elif doc_type.startswith("ercot-"):
+        base = _EXTRACT_SYSTEM_ERCOT_NPRR
+    else:
+        base = _EXTRACT_SYSTEM_PUCT
+    return base + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY
 
 
 async def handle_extract(payload: dict) -> dict:

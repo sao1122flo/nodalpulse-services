@@ -239,13 +239,15 @@ async def classify(
     filing_id=None,
     prompt_version: str | None = None,
 ) -> str:
+    # No cache_control here: claude-haiku-4-5 requires 4,096 tokens minimum to
+    # engage prompt caching, which is economically unreachable for a triage prompt.
     msg = await tracked_messages_create(
         pipeline_stage="haiku-gate",
         filing_id=filing_id,
         prompt_version=prompt_version,
         model=model,
         max_tokens=512,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": system}],
         messages=[{"role": "user", "content": user}],
     )
     return msg.content[0].text  # type: ignore[return-value]

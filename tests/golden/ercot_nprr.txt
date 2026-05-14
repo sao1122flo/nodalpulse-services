@@ -1,0 +1,69 @@
+NPRR1301: Modifications to ECRS Procurement Methodology
+
+REVISION REQUEST NUMBER: NPRR1301
+SUBMITTING ENTITY: NRG Energy, Inc.
+DATE SUBMITTED: April 28, 2026
+STATUS: Filed — Pending PRS Review
+
+I. REVISION SUMMARY
+
+This Nodal Protocol Revision Request (NPRR1301) proposes amendments to
+Sections 6.5.7 and 6.5.9 of the ERCOT Nodal Operating Protocols to revise the
+methodology used by ERCOT to procure ERCOT Contingency Reserve Service (ECRS)
+during periods of low system inertia.
+
+II. BACKGROUND
+
+ECRS was introduced as a new ancillary service product in June 2023 to provide
+10-minute headroom for ERCOT to manage contingency events without depleting
+Responsive Reserve Service (RRS). Since ECRS's introduction, operational
+experience across multiple seasons has revealed that the current procurement
+formula systematically underestimates ECRS requirements during high-wind,
+low-inertia conditions that commonly occur during overnight hours when solar
+generation is unavailable and wind generation is concentrated in West Texas.
+
+During the winter 2025-2026 season, ERCOT issued three Emergency Notification
+System (ENS) activations that post-event analysis attributed in part to
+insufficient ECRS procurement during low-inertia periods. These events motivated
+NRG to propose structural modifications to the procurement formula.
+
+III. PROPOSED PROTOCOL CHANGES
+
+This revision proposes three changes to the ERCOT Nodal Operating Protocols:
+
+1. Inertia Adjustment Factor (Section 6.5.7(c) — new subsection):
+   Add a new inertia adjustment factor (IAF) to the ECRS procurement formula.
+   The IAF shall be calculated as a function of real-time system inertia measured
+   in MW-seconds (MWs). When system inertia falls below 150,000 MWs, the IAF
+   increases the base ECRS procurement requirement by a graduated percentage
+   not to exceed 25 percent.
+
+2. Minimum ECRS Procurement Floor (Section 6.5.7(d) — new subsection):
+   Establish minimum ECRS procurement floors of 2,500 MW during identified
+   high-risk periods (defined as hours with system inertia below 100,000 MWs
+   and wind penetration exceeding 60 percent of real-time load).
+
+3. DAM Schedule Publication (Section 6.5.9):
+   Require ERCOT to publish a revised ECRS procurement schedule in the
+   Day-Ahead Market timeline, no later than 10:00 AM CT of the day prior to the
+   operating day, to allow market participants to plan resource commitments.
+
+IV. MARKET IMPACT AND COST ESTIMATE
+
+Increased ECRS procurement will reduce capacity available for energy offers from
+resources providing ECRS. The submitting entity estimates:
+- Average annual ancillary service cost increase: $85-120 million based on
+  historical ECRS clearing prices from June 2023 through March 2026.
+- Reliability benefit: estimated reduction of 2-3 ENS activations per year based
+  on simulation analysis of the winter 2025-2026 events.
+
+NRG contends that improved system reliability offsets the cost increase by
+reducing the frequency of high-priced real-time scarcity events.
+
+V. PROPOSED EFFECTIVE DATE
+
+If approved by the PUCT Board: October 1, 2026, to align with the start of the
+winter 2026-2027 season.
+
+PRS MEETING DATE: June 15, 2026
+TAC VOTE TARGET: July 22, 2026
