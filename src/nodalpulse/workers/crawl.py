@@ -1,6 +1,8 @@
 """Job handler for crawl-puct queue jobs."""
 
 import logging
+import os
+from datetime import date, timedelta
 
 import httpx
 
@@ -10,6 +12,8 @@ from nodalpulse.queue.pg_queue import enqueue
 from nodalpulse.storage import r2
 
 logger = logging.getLogger(__name__)
+
+MAX_LOOKBACK_DAYS = int(os.environ.get("WORKER_MAX_LOOKBACK_DAYS", "3"))
 
 CONTENT_TYPES = {
     "pdf": "application/pdf",
@@ -21,8 +25,10 @@ _HTTP_HEADERS = {"User-Agent": "NodalPulse/1.0 regulatory-monitor"}
 
 
 async def handle_crawl_puct(payload: dict) -> dict:
-    since = payload.get("since") or await get_last_crawled_at("puct")
-    logger.info("handle_crawl_puct since=%s", since)
+    raw_since = payload.get("since") or await get_last_crawled_at("puct")
+    earliest = (date.today() - timedelta(days=MAX_LOOKBACK_DAYS)).isoformat()
+    since = max(raw_since, earliest) if raw_since else earliest
+    logger.info("handle_crawl_puct since=%s (max_lookback=%d days)", since, MAX_LOOKBACK_DAYS)
 
     source_id = await get_source_id("puct")
     if not source_id:

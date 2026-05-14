@@ -247,6 +247,69 @@ async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
     )
 
 
+# ── admin: job inspection and purge ──────────────────────────────────────────
+
+@app.get("/admin/jobs", dependencies=[Depends(verify_bearer)])
+async def admin_jobs_inspect(kind: str = "extract", status: str = "pending") -> JSONResponse:
+    """Count jobs matching kind + status.
+
+    ?kind=extract&status=pending (defaults)
+    Use status=running to inspect zombie jobs.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT COUNT(*) FROM jobs WHERE kind = :kind AND status = :status"),
+            {"kind": kind, "status": status},
+        )
+    return JSONResponse({"kind": kind, "status": status, "count": int(result.scalar_one())})
+
+
+class PurgeJobsRequest(BaseModel):
+    kind: str
+    status: str = "pending"
+
+
+@app.post("/admin/jobs/purge", dependencies=[Depends(verify_bearer)])
+async def admin_jobs_purge(body: PurgeJobsRequest) -> JSONResponse:
+    """Mark jobs as failed so they stop blocking the queue.
+
+    For status='running', only matches jobs whose locked_until has expired
+    (updated_at < NOW() - 1h) — safe to call while the worker is live without
+    risking in-flight jobs.
+    """
+    async with AsyncSessionLocal() as session:
+        if body.status == "running":
+            result = await session.execute(
+                text("""
+                    UPDATE jobs
+                    SET status = 'failed',
+                        error = 'purged by admin (zombie running job)',
+                        locked_by = NULL,
+                        locked_until = NULL,
+                        updated_at = NOW()
+                    WHERE kind = :kind
+                      AND status = 'running'
+                      AND updated_at < NOW() - INTERVAL '1 hour'
+                """),
+                {"kind": body.kind},
+            )
+        else:
+            result = await session.execute(
+                text("""
+                    UPDATE jobs
+                    SET status = 'failed',
+                        error = 'purged by admin',
+                        updated_at = NOW()
+                    WHERE kind = :kind AND status = :status
+                """),
+                {"kind": body.kind, "status": body.status},
+            )
+        purged = result.rowcount
+        await session.commit()
+    logger.info("admin/jobs/purge: kind=%s status=%s purged=%d", body.kind, body.status, purged)
+    return JSONResponse({"kind": body.kind, "status": body.status, "purged": purged})
+
+
 # ── admin: LLM cost aggregations ─────────────────────────────────────────────
 
 @app.get("/admin/llm-costs", dependencies=[Depends(verify_bearer)])

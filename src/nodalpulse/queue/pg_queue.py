@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import socket
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -10,9 +11,24 @@ from typing import Any
 from sqlalchemy import text
 
 from nodalpulse.db.engine import AsyncSessionLocal
+from nodalpulse.llm.client import CreditExhaustedError
 
 logger = logging.getLogger(__name__)
 WORKER_ID = socket.gethostname()
+
+_SPEND_CIRCUIT_USD = float(os.environ.get("WORKER_SPEND_CIRCUIT_USD_PER_HOUR", "5.0"))
+
+
+async def _last_hour_spend_usd() -> float:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT COALESCE(SUM(cost_usd_estimate), 0)
+                FROM llm_calls
+                WHERE created_at >= NOW() - INTERVAL '1 hour'
+            """)
+        )
+        return float(result.scalar_one() or 0)
 
 
 async def enqueue(kind: str, payload: dict[str, Any], priority: int = 0) -> str:
@@ -154,6 +170,15 @@ async def fail(job_id: str, error: str, duration_ms: int, max_attempts: int = 5)
 async def run_worker(kind: str, handler: Any, poll_interval: float = 5.0) -> None:
     logger.info("Worker started: kind=%s worker_id=%s", kind, WORKER_ID)
     while True:
+        spent = await _last_hour_spend_usd()
+        if spent >= _SPEND_CIRCUIT_USD:
+            logger.critical(
+                "Spend circuit breaker: $%.4f last-hour >= $%.2f threshold — sleeping 1h",
+                spent, _SPEND_CIRCUIT_USD,
+            )
+            await asyncio.sleep(3600)
+            continue
+
         job = await dequeue(kind)
         if job is None:
             await asyncio.sleep(poll_interval)
@@ -166,6 +191,14 @@ async def run_worker(kind: str, handler: Any, poll_interval: float = 5.0) -> Non
             ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
             await complete(job["id"], output or {}, ms)
             logger.info("Job %s done in %dms", job["id"], ms)
+        except CreditExhaustedError as exc:
+            ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
+            logger.critical(
+                "CreditExhaustedError — worker paused 24h (top up credit then redeploy): %s", exc
+            )
+            await fail(job["id"], str(exc), ms, max_attempts=job["max_attempts"])
+            await asyncio.sleep(86400)
+            continue
         except Exception as exc:
             ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
             logger.exception("Job %s failed: %s", job["id"], exc)

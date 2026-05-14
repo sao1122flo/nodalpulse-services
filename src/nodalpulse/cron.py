@@ -12,7 +12,7 @@ and enqueues catch-up jobs before entering the main loop.
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date
@@ -64,10 +64,11 @@ async def _tick(now_ct: datetime) -> None:
     if now_ct.hour == _CRAWL_HOUR and now_ct.minute < _BRIEF_WINDOW_MIN:
         if not await is_crawl_done_for(today):
             try:
-                await enqueue("crawl-puct", {}, priority=10)
-                await enqueue("crawl-ercot", {}, priority=10)
+                since_date = (today - timedelta(days=1)).isoformat()
+                await enqueue("crawl-puct", {"since": since_date}, priority=10)
+                await enqueue("crawl-ercot", {"since": since_date}, priority=10)
                 await mark_crawl_done_for(today)
-                logger.info("Enqueued crawl-puct + crawl-ercot for %s", today)
+                logger.info("Enqueued crawl-puct + crawl-ercot for %s (since=%s)", today, since_date)
             except Exception:
                 logger.exception("Failed to enqueue crawls for %s — will retry next minute", today)
 
@@ -97,10 +98,11 @@ async def _startup_catchup(now_ct: datetime) -> None:
     if now_ct.hour >= _CRAWL_HOUR:
         if not await is_crawl_done_for(today):
             try:
-                await enqueue("crawl-puct", {}, priority=10)
-                await enqueue("crawl-ercot", {}, priority=10)
+                since_date = (today - timedelta(days=1)).isoformat()
+                await enqueue("crawl-puct", {"since": since_date}, priority=10)
+                await enqueue("crawl-ercot", {"since": since_date}, priority=10)
                 await mark_crawl_done_for(today)
-                logger.info("Startup catch-up: enqueued crawls for %s", today)
+                logger.info("Startup catch-up: enqueued crawls for %s (since=%s)", today, since_date)
             except Exception:
                 logger.exception("Startup catch-up: failed to enqueue crawls for %s", today)
 

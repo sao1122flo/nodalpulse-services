@@ -12,6 +12,11 @@ from nodalpulse.settings import settings
 
 logger = logging.getLogger(__name__)
 
+
+class CreditExhaustedError(RuntimeError):
+    """Raised when Anthropic returns HTTP 402 (account has no credits)."""
+
+
 # ── Anthropic client ──────────────────────────────────────────────────────────
 
 _client: anthropic.AsyncAnthropic | None = None
@@ -183,6 +188,11 @@ async def tracked_messages_create(
     try:
         response = await client.messages.create(**anthropic_kwargs)
         return response
+    except anthropic.APIStatusError as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        if exc.status_code == 402:
+            raise CreditExhaustedError(str(exc)) from exc
+        raise
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         raise

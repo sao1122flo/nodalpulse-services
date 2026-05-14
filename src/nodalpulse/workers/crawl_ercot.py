@@ -5,6 +5,8 @@ Payload: {"since": "2026-05-01"}  (optional; defaults to last-crawled date per s
 """
 
 import logging
+import os
+from datetime import date, timedelta
 
 from nodalpulse.crawlers.ercot_mns import ErcotMarketNoticesCrawler
 from nodalpulse.crawlers.ercot_nprr import ErcotNprrCrawler
@@ -14,6 +16,8 @@ from nodalpulse.storage import r2
 
 logger = logging.getLogger(__name__)
 
+MAX_LOOKBACK_DAYS = int(os.environ.get("WORKER_MAX_LOOKBACK_DAYS", "3"))
+
 CONTENT_TYPES = {
     "pdf": "application/pdf",
     "html": "text/html",
@@ -22,7 +26,9 @@ CONTENT_TYPES = {
 
 
 async def _run_crawler(crawler, source_slug: str, since: str | None) -> dict:
-    effective_since = since or await get_last_crawled_at(source_slug)
+    raw_since = since or await get_last_crawled_at(source_slug)
+    earliest = (date.today() - timedelta(days=MAX_LOOKBACK_DAYS)).isoformat()
+    effective_since = max(raw_since, earliest) if raw_since else earliest
     source_id = await get_source_id(source_slug)
     if not source_id:
         raise RuntimeError(f"source '{source_slug}' not found — run services_schema.sql")

@@ -14,7 +14,7 @@ Mock targets are module-level names as imported into nodalpulse.cron:
 2026-05-12 is Tuesday; 2026-05-16 is Saturday.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from nodalpulse.cron import _startup_catchup, _tick
 
 _CHICAGO = ZoneInfo("America/Chicago")
 _TODAY = date(2026, 5, 12)
+_YESTERDAY = (_TODAY - timedelta(days=1)).isoformat()
 
 
 # ── Startup catch-up tests ─────────────────────────────────────────────────────
@@ -42,8 +43,8 @@ async def test_startup_catchup_both_missed(mocker):
 
     await _startup_catchup(now_ct)
 
-    mock_enqueue.assert_any_call("crawl-puct", {}, priority=10)
-    mock_enqueue.assert_any_call("crawl-ercot", {}, priority=10)
+    mock_enqueue.assert_any_call("crawl-puct", {"since": _YESTERDAY}, priority=10)
+    mock_enqueue.assert_any_call("crawl-ercot", {"since": _YESTERDAY}, priority=10)
     mock_mark_crawl.assert_called_once_with(_TODAY)
     mock_enqueue_briefs.assert_called_once_with(_TODAY)
     mock_mark_brief.assert_called_once_with(_TODAY)
@@ -82,8 +83,8 @@ async def test_tick_crawl_fires(mocker):
 
     await _tick(now_ct)
 
-    mock_enqueue.assert_any_call("crawl-puct", {}, priority=10)
-    mock_enqueue.assert_any_call("crawl-ercot", {}, priority=10)
+    mock_enqueue.assert_any_call("crawl-puct", {"since": _YESTERDAY}, priority=10)
+    mock_enqueue.assert_any_call("crawl-ercot", {"since": _YESTERDAY}, priority=10)
     mock_mark_crawl.assert_called_once_with(_TODAY)
 
 
