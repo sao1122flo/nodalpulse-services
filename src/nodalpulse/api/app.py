@@ -1,9 +1,12 @@
+import asyncio
 import logging
 import os
+import uuid
 from datetime import date, timedelta
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -473,3 +476,56 @@ async def llm_costs(days: int = 7) -> JSONResponse:
             for row in rows
         ],
     })
+
+
+# ── admin: PUCT lead scraper ──────────────────────────────────────────────────
+
+_scrape_jobs: dict[str, dict] = {}
+
+
+async def _run_scrape(job_id: str, dockets: str) -> None:
+    out_path = f"/tmp/leads-{job_id}.csv"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "uv", "run", "python", "scripts/scrape_puct_commenters.py",
+            "--dockets", dockets, "--out", out_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd="/app",
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        if proc.returncode != 0:
+            _scrape_jobs[job_id] = {"status": "error", "csv": None, "error": stderr.decode()}
+            return
+        _scrape_jobs[job_id] = {
+            "status": "done",
+            "csv": Path(out_path).read_text(encoding="utf-8"),
+            "error": None,
+        }
+    except Exception as exc:
+        _scrape_jobs[job_id] = {"status": "error", "csv": None, "error": str(exc)}
+
+
+@app.post("/admin/scrape-leads", dependencies=[Depends(verify_bearer)])
+async def start_scrape_leads(dockets: str = "59475,58923,59336") -> JSONResponse:
+    """Start a background PUCT lead scrape. Poll GET /admin/scrape-leads/{job_id} for results."""
+    job_id = uuid.uuid4().hex[:8]
+    _scrape_jobs[job_id] = {"status": "running", "csv": None, "error": None}
+    asyncio.create_task(_run_scrape(job_id, dockets))
+    logger.info("scrape-leads job %s started for dockets=%s", job_id, dockets)
+    return JSONResponse({"job_id": job_id, "status": "running"})
+
+
+@app.get("/admin/scrape-leads/{job_id}", dependencies=[Depends(verify_bearer)])
+async def get_scrape_leads(job_id: str):
+    """Poll scrape job status. Returns CSV when done."""
+    job = _scrape_jobs.get(job_id)
+    if not job:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    if job["status"] == "done":
+        return Response(
+            content=(job["csv"] or "").encode("utf-8"),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=leads-{date.today().isoformat()}.csv"},
+        )
+    return JSONResponse({"status": job["status"], "error": job["error"]})
