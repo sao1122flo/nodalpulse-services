@@ -30,6 +30,7 @@ import io
 import re
 import sys
 import time
+import zipfile
 from datetime import date
 from pathlib import Path
 from urllib.parse import urljoin
@@ -196,6 +197,23 @@ def _extract_contact(pdf_bytes: bytes) -> tuple[str, str]:
     return email, phone
 
 
+# ── ZIP-aware PDF fetcher ─────────────────────────────────────────────────────
+
+def _get_pdf_bytes(client: httpx.Client, url: str) -> bytes:
+    """Download URL; if it's a ZIP, extract the first PDF inside and return its bytes."""
+    resp = client.get(url)
+    resp.raise_for_status()
+    time.sleep(REQUEST_DELAY)
+
+    if url.upper().endswith(".ZIP"):
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            pdf_names = [n for n in zf.namelist() if n.upper().endswith(".PDF")]
+            if not pdf_names:
+                raise ValueError(f"no PDF inside ZIP: {url}")
+            return zf.read(pdf_names[0])
+    return resp.content
+
+
 # ── per-item processing (Fix 4: isolated try/except) ─────────────────────────
 
 def _process_item(
@@ -218,12 +236,9 @@ def _process_item(
         return []
 
     filing_url = pdf_urls[0]
-    print(f"  [{cn}/{inum}] PDF {filing_url.split('/')[-1]} …")
-    pdf_resp = client.get(filing_url)
-    pdf_resp.raise_for_status()
-    time.sleep(REQUEST_DELAY)
-
-    email, phone = _extract_contact(pdf_resp.content)
+    print(f"  [{cn}/{inum}] {filing_url.split('/')[-1]} …")
+    pdf_bytes = _get_pdf_bytes(client, filing_url)
+    email, phone = _extract_contact(pdf_bytes)
 
     org = item["organization"]
 

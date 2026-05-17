@@ -530,3 +530,27 @@ async def get_scrape_leads(job_id: str):
             headers={"Content-Disposition": f"attachment; filename=leads-{date.today().isoformat()}.csv"},
         )
     return JSONResponse({"status": job["status"], "error": job["error"]})
+
+
+@app.get("/admin/top-dockets", dependencies=[Depends(verify_bearer)])
+async def top_dockets(min_filers: int = 3, limit: int = 30) -> JSONResponse:
+    """Return dockets ranked by unique-filer count — use to find professional-filer dockets."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT d.external_id, d.title, COUNT(DISTINCT f.filer) AS uniq_filers
+                FROM filings f
+                JOIN dockets d ON d.id = f.docket_id
+                WHERE f.filer IS NOT NULL AND f.filer != ''
+                GROUP BY d.external_id, d.title
+                HAVING COUNT(DISTINCT f.filer) >= :min_filers
+                ORDER BY uniq_filers DESC
+                LIMIT :limit
+            """),
+            {"min_filers": min_filers, "limit": limit},
+        )
+        rows = result.mappings().all()
+    return JSONResponse([
+        {"docket": r["external_id"], "title": r["title"], "uniq_filers": r["uniq_filers"]}
+        for r in rows
+    ])
