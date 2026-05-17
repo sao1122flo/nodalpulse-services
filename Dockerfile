@@ -10,6 +10,7 @@ RUN uv sync --frozen --no-dev --python 3.12
 
 # Copy application source
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY Procfile ./
 
 ENV PYTHONPATH=/app/src
