@@ -10,6 +10,7 @@ This constant must remain byte-identical across all calls. No f-string
 interpolation, no per-call values.
 """
 
+
 TEXAS_ELECTRICITY_TAXONOMY = """\
 === TEXAS ELECTRICITY REGULATORY REFERENCE ===
 

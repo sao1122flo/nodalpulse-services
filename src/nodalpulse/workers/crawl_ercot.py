@@ -17,6 +17,7 @@ from nodalpulse.storage import r2
 logger = logging.getLogger(__name__)
 
 MAX_LOOKBACK_DAYS = int(os.environ.get("WORKER_MAX_LOOKBACK_DAYS", "3"))
+EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "on-demand")
 
 CONTENT_TYPES = {
     "pdf": "application/pdf",
@@ -48,10 +49,11 @@ async def _run_crawler(crawler, source_slug: str, since: str | None) -> dict:
 
             filing_id = await upsert_filing(filing, source_id, r2_key)
             if filing_id:
-                await enqueue(
-                    "extract",
-                    {"filing_id": filing_id, "r2_key": r2_key, "doc_type": filing.doc_type},
-                )
+                if EXTRACTION_MODE == "proactive":
+                    await enqueue(
+                        "extract",
+                        {"filing_id": filing_id, "r2_key": r2_key, "doc_type": filing.doc_type},
+                    )
                 saved += 1
             else:
                 skipped += 1

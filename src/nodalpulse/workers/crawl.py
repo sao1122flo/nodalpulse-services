@@ -7,13 +7,14 @@ from datetime import date, timedelta
 import httpx
 
 from nodalpulse.crawlers.puct import PuctCrawler
-from nodalpulse.db.filings import get_last_crawled_at, get_source_id, upsert_filing
+from nodalpulse.db.filings import find_or_create_docket, get_last_crawled_at, get_source_id, upsert_filing
 from nodalpulse.queue.pg_queue import enqueue
 from nodalpulse.storage import r2
 
 logger = logging.getLogger(__name__)
 
 MAX_LOOKBACK_DAYS = int(os.environ.get("WORKER_MAX_LOOKBACK_DAYS", "3"))
+EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "on-demand")
 
 CONTENT_TYPES = {
     "pdf": "application/pdf",
@@ -54,12 +55,18 @@ async def handle_crawl_puct(payload: dict) -> dict:
                 ct = CONTENT_TYPES.get(filing.file_ext, "application/octet-stream")
                 r2.upload(r2_key, filing.content, ct)
 
-                filing_id = await upsert_filing(filing, source_id, r2_key)
+                control_number = filing.metadata.get("control_number")
+                docket_id = (
+                    await find_or_create_docket(source_id, control_number)
+                    if control_number else None
+                )
+                filing_id = await upsert_filing(filing, source_id, r2_key, docket_id=docket_id)
                 if filing_id:
-                    await enqueue(
-                        "extract",
-                        {"filing_id": filing_id, "r2_key": r2_key, "doc_type": filing.doc_type},
-                    )
+                    if EXTRACTION_MODE == "proactive":
+                        await enqueue(
+                            "extract",
+                            {"filing_id": filing_id, "r2_key": r2_key, "doc_type": filing.doc_type},
+                        )
                     saved += 1
                 else:
                     skipped += 1

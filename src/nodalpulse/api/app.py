@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import date, timedelta
 
 from fastapi import Depends, FastAPI, Request
@@ -14,6 +15,12 @@ from nodalpulse.queue.pg_queue import enqueue, enqueue_idempotent
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="nodalpulse-services", version="0.1.0")
+
+_REFRESH_DOCKET_HOURLY_CAP = int(os.environ.get("REFRESH_DOCKET_USER_HOURLY_CAP", "30"))
+_REFRESH_DOCKET_MAX_FILINGS = int(os.environ.get("REFRESH_DOCKET_MAX_FILINGS_PER_PIN", "5"))
+
+# TODO: support ERCOT source via explicit source param once ERCOT docket tracking ships
+_PUCT_SOURCE_ID = "0725032a-239f-475d-bdd5-251adad3ae05"
 
 
 @app.get("/health")
@@ -245,6 +252,94 @@ async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
         {"job_id": job_id, "status": "queued" if created else "already_queued"},
         status_code=status_code,
     )
+
+
+class RefreshDocketRequest(BaseModel):
+    docket_number: str
+    user_id: str         # advisory — bearer token is the security boundary
+    max_filings: int = _REFRESH_DOCKET_MAX_FILINGS
+
+
+@app.post("/extraction/refresh-docket", dependencies=[Depends(verify_bearer)])
+async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
+    """Enqueue refresh-extraction jobs for un-extracted filings in a docket.
+
+    Called by trackDocket in nodalpulse-web when a user pins a docket.
+    Rate-limited to REFRESH_DOCKET_USER_HOURLY_CAP jobs per user per hour.
+    Returns {docket_number, queued, already_extracted}.
+    """
+    max_f = min(body.max_filings, _REFRESH_DOCKET_MAX_FILINGS)
+
+    async with AsyncSessionLocal() as session:
+        rate_result = await session.execute(
+            text("""
+                SELECT COUNT(*) FROM jobs
+                WHERE kind = 'refresh-extraction'
+                  AND payload->>'user_id' = :user_id
+                  AND created_at >= NOW() - INTERVAL '1 hour'
+            """),
+            {"user_id": body.user_id},
+        )
+        recent = int(rate_result.scalar_one())
+
+        if recent >= _REFRESH_DOCKET_HOURLY_CAP:
+            logger.warning(
+                "refresh-docket rate limit hit: user=%s docket=%s queued_last_hour=%d",
+                body.user_id, body.docket_number, recent,
+            )
+            return JSONResponse(
+                {"error": "rate_limit_exceeded", "queued_last_hour": recent},
+                status_code=429,
+            )
+
+        effective_max = min(max_f, _REFRESH_DOCKET_HOURLY_CAP - recent)
+
+        filings_result = await session.execute(
+            text("""
+                SELECT f.id::text AS filing_id, f.r2_key, f.doc_type,
+                       (e.id IS NOT NULL) AS already_extracted
+                FROM filings f
+                LEFT JOIN extractions e ON e.filing_id = f.id
+                WHERE f.docket_id = (
+                    SELECT id FROM dockets
+                    WHERE external_id = :docket_number
+                      AND source_id = CAST(:source_id AS uuid)
+                )
+                ORDER BY f.filed_at DESC
+                LIMIT :limit
+            """),
+            {
+                "docket_number": body.docket_number,
+                "source_id": _PUCT_SOURCE_ID,
+                "limit": effective_max + 50,
+            },
+        )
+        rows = filings_result.mappings().all()
+
+    queued = 0
+    already_extracted = 0
+    for row in rows:
+        if row["already_extracted"]:
+            already_extracted += 1
+            continue
+        if queued >= effective_max:
+            break
+        await enqueue(
+            "refresh-extraction",
+            {"filing_id": row["filing_id"], "user_id": body.user_id},
+            priority=8,
+        )
+        queued += 1
+
+    logger.info(
+        "refresh-docket user=%s docket=%s found=%d already_extracted=%d enqueued=%d",
+        body.user_id, body.docket_number, len(rows), already_extracted, queued,
+    )
+    return JSONResponse({
+        "docket_number": body.docket_number,
+        "queued": queued,
+        "already_extracted": already_extracted,
+    })
 
 
 # ── admin: job inspection and purge ──────────────────────────────────────────

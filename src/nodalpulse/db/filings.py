@@ -51,17 +51,48 @@ async def get_last_crawled_at(source_slug: str) -> str | None:
         return result.scalar_one_or_none()
 
 
-async def upsert_filing(raw: RawFiling, source_id: str, r2_key: str) -> str | None:
-    """Insert filing row. Skips on conflict (same source + external_id). Returns UUID or None."""
+async def find_or_create_docket(source_id: str, docket_number: str) -> str:
+    """Find or create a dockets row for this source + docket_number.
+
+    Returns the docket UUID. Safe under concurrent writes: ON CONFLICT DO UPDATE
+    is used so the RETURNING clause always fires, even on a race.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                INSERT INTO dockets (source_id, external_id, status)
+                VALUES (CAST(:source_id AS uuid), :external_id, 'open')
+                ON CONFLICT (source_id, external_id) DO UPDATE SET updated_at = NOW()
+                RETURNING id::text
+            """),
+            {"source_id": source_id, "external_id": docket_number},
+        )
+        docket_id = result.scalar_one()
+        await session.commit()
+        return docket_id
+
+
+async def upsert_filing(
+    raw: RawFiling,
+    source_id: str,
+    r2_key: str,
+    docket_id: str | None = None,
+) -> str | None:
+    """Insert filing row. Skips on conflict (same source + external_id). Returns UUID or None.
+
+    If docket_id is provided and the filing already exists with docket_id IS NULL,
+    silently backfills docket_id so re-crawled filings get linked without a separate pass.
+    """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
                 INSERT INTO filings (
                     source_id, external_id, doc_type, title, filer,
-                    filed_at, r2_key, file_ext, source_url, metadata
+                    filed_at, r2_key, file_ext, source_url, metadata, docket_id
                 ) VALUES (
                     CAST(:source_id AS uuid), :external_id, :doc_type, :title, :filer,
-                    CAST(:filed_at AS timestamptz), :r2_key, :file_ext, :source_url, CAST(:metadata AS jsonb)
+                    CAST(:filed_at AS timestamptz), :r2_key, :file_ext, :source_url,
+                    CAST(:metadata AS jsonb), CAST(:docket_id AS uuid)
                 )
                 ON CONFLICT (source_id, external_id) DO NOTHING
                 RETURNING id::text
@@ -77,9 +108,23 @@ async def upsert_filing(raw: RawFiling, source_id: str, r2_key: str) -> str | No
                 "file_ext": raw.file_ext,
                 "source_url": raw.source_url,
                 "metadata": json.dumps(raw.metadata),
+                "docket_id": docket_id,
             },
         )
         filing_id = result.scalar_one_or_none()
+
+        if not filing_id and docket_id:
+            # Existing filing — backfill docket_id only if still NULL (zero-cost no-op otherwise)
+            await session.execute(
+                text("""
+                    UPDATE filings SET docket_id = CAST(:docket_id AS uuid)
+                    WHERE source_id = CAST(:source_id AS uuid)
+                      AND external_id = :external_id
+                      AND docket_id IS NULL
+                """),
+                {"docket_id": docket_id, "source_id": source_id, "external_id": raw.external_id},
+            )
+
         await session.commit()
         if filing_id:
             logger.debug("Inserted filing %s → %s", raw.external_id, filing_id)
