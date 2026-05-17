@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 import uuid
 from datetime import date, timedelta
 from pathlib import Path
@@ -487,7 +488,7 @@ async def _run_scrape(job_id: str, dockets: str) -> None:
     out_path = f"/tmp/leads-{job_id}.csv"
     try:
         proc = await asyncio.create_subprocess_exec(
-            "uv", "run", "python", "scripts/scrape_puct_commenters.py",
+            sys.executable, "scripts/scrape_puct_commenters.py",
             "--dockets", dockets, "--out", out_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
