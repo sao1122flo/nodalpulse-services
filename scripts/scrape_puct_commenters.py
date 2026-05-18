@@ -179,6 +179,8 @@ def _parse_document_urls(html: str) -> list[str]:
         if href.upper().endswith(".PDF") or "/Documents/" in href:
             url = href if href.startswith("http") else urljoin(BASE_URL, href)
             urls.append(url)
+    # Prefer direct PDFs over ZIPs so the signature block is readable without extraction
+    urls.sort(key=lambda u: (0 if u.upper().endswith(".PDF") else 1))
     return urls
 
 
