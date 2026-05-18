@@ -179,8 +179,6 @@ def _parse_document_urls(html: str) -> list[str]:
         if href.upper().endswith(".PDF") or "/Documents/" in href:
             url = href if href.startswith("http") else urljoin(BASE_URL, href)
             urls.append(url)
-    # Prefer direct PDFs over ZIPs so the signature block is readable without extraction
-    urls.sort(key=lambda u: (0 if u.upper().endswith(".PDF") else 1))
     return urls
 
 
@@ -241,7 +239,7 @@ def _process_item(
     item: dict,
     seen: set,
 ) -> list[dict]:
-    """Fetch documents page + PDF for one comment item. Returns 0 or 1 lead rows."""
+    """Fetch documents page + all docs for one comment item, stopping when contact found."""
     cn   = item["control_number"]
     inum = item["item_number"]
 
@@ -255,10 +253,21 @@ def _process_item(
         print(f"  [{cn}/{inum}] no PDF — skipping", file=sys.stderr)
         return []
 
+    # Try each document URL until we extract contact info; use the last attempted URL
+    # as filing_url so we always record something even if contact fields are blank.
+    name = email = phone = ""
     filing_url = pdf_urls[0]
-    print(f"  [{cn}/{inum}] {filing_url.split('/')[-1]} …")
-    pdf_bytes = _get_pdf_bytes(client, filing_url)
-    name, email, phone = _extract_contact(pdf_bytes)
+    for url in pdf_urls:
+        filing_url = url
+        print(f"  [{cn}/{inum}] {url.split('/')[-1]} …")
+        try:
+            pdf_bytes = _get_pdf_bytes(client, url)
+        except Exception as exc:
+            print(f"    fetch error: {exc}", file=sys.stderr)
+            continue
+        name, email, phone = _extract_contact(pdf_bytes)
+        if email or phone:
+            break
 
     org = item["organization"]
 
