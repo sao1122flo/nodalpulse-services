@@ -77,12 +77,12 @@ _ROLE_RULES: list[tuple[re.Pattern, str]] = [
         r"(?i)\b(?:law|LLP|L\.L\.P|attorney|counsel|Bracewell|Vinson|"
         r"Baker\s*Botts|McGinnis|Jackson\s*Walker|Lloyd\s*Gosselink|"
         r"Husch|Scott\s*Douglass|Locke\s*Lord|Winstead|Munsch|"
-        r"Graves|Dougherty|Glasscock)\b"
+        r"Graves|Dougherty|Glasscock|Lloyd\s*Gosselink|lglawfirm)\b"
     ), "lawyer"),
     (re.compile(
         r"(?i)\b(?:consulting|consultants|advisors|advisory|Navigant|ICF|"
         r"Analysis\s*Group|Potomac\s*Economics|Wood\s*Mac|NERA|Guidehouse|"
-        r"Power\s*Advocates|Astrapé)\b"
+        r"Power\s*Advocates|Astrapé|Silverstein)\b"
     ), "consultant"),
     (re.compile(
         r"(?i)\b(?:REP|retail\s+electric|Constellation|Gexa|Chariot|Amigo|"
@@ -92,13 +92,23 @@ _ROLE_RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(
         r"(?i)\b(?:generation|generator|Luminant|Calpine|Vistra|NextEra|"
         r"Enel|EDF|Recurrent|AES|NTE|Panda|Ørsted|Orsted|Invenergy|"
-        r"Apex|EDP|wind|solar|storage|BESS|battery)\b"
+        r"Apex|EDP|RWE|Savion|Capital\s*Power|Exelon|GE\s*Renewable|"
+        r"Siemens\s*Gamesa|Vestas|National\s*Grid\s*Renewables|"
+        r"Key\s*Capture|wind|solar|storage|BESS|battery|renewables)\b"
     ), "generator"),
     (re.compile(
-        r"(?i)\b(?:Oncor|CenterPoint|AEP|TNMP|SWEPCO|transmission|"
+        r"(?i)\b(?:Oncor|CenterPoint|AEP|TNMP|SWEPCO|NRG|LCRA|Sharyland|"
+        r"Enbridge|South\s*Texas\s*Electric|GEUS|transmission|"
         r"distribution|utilities|utility|cooperative|co-op|coop|"
         r"municipal|city\s+of)\b"
-    ), "generator"),
+    ), "wires-or-fuel"),
+    (re.compile(
+        r"(?i)\b(?:ERCOT|OPUC|TIEC|TCPA|AARP|Public\s*Citizen|"
+        r"Texas\s*Solar\s*Power|Texas\s*Electric\s*Cooperatives|"
+        r"Advanced\s*Power\s*Alliance|American\s*Clean\s*Power|"
+        r"Conservative\s*Texans|Texas\s*Advanced\s*Energy|"
+        r"Steering\s*Committee|Cities\s*Served)\b"
+    ), "advocate"),
 ]
 
 
