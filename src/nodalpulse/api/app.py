@@ -494,7 +494,7 @@ async def _run_scrape(job_id: str, dockets: str) -> None:
             stderr=asyncio.subprocess.PIPE,
             cwd="/app",
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=1800)
         if proc.returncode != 0:
             _scrape_jobs[job_id] = {"status": "error", "csv": None, "error": stderr.decode()}
             return
