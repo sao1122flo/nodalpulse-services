@@ -68,6 +68,10 @@ _EXCLUDE = re.compile(
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"(?:\+?1[-.\s]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})\b")
+# Matches "By: Diana Woodman Hammett" — stops before all-caps org or known keywords
+_NAME_RE = re.compile(
+    r"(?i)By:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})"
+)
 
 # ── role heuristic (lawyer-first ordering) ────────────────────────────────────
 
@@ -180,18 +184,22 @@ def _parse_document_urls(html: str) -> list[str]:
 
 # ── PDF contact extraction (Fix 1 + Fix 2) ───────────────────────────────────
 
-def _extract_contact(pdf_bytes: bytes) -> tuple[str, str]:
-    """Return (email, phone) from the first 3 pages of a PDF.
+def _extract_contact(pdf_bytes: bytes) -> tuple[str, str, str]:
+    """Return (name, email, phone) from the first 3 pages of a PDF.
 
     Text is whitespace-collapsed before regex so line breaks don't split tokens.
     Returns empty string for each field if not found.
     """
-    email = phone = ""
+    name = email = phone = ""
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages[:3]:  # cap at page 0–2 (Fix 2)
                 raw = page.extract_text() or ""
                 flat = re.sub(r"\s+", " ", raw)  # collapse whitespace (Fix 1)
+                if not name:
+                    m = _NAME_RE.search(flat)
+                    if m:
+                        name = m.group(1).strip()
                 if not email:
                     m = _EMAIL_RE.search(flat)
                     if m:
@@ -200,11 +208,11 @@ def _extract_contact(pdf_bytes: bytes) -> tuple[str, str]:
                     m = _PHONE_RE.search(flat)
                     if m:
                         phone = f"({m.group(1)}) {m.group(2)}-{m.group(3)}"
-                if email and phone:
+                if name and email and phone:
                     break
     except Exception as exc:
         print(f"    PDF parse error: {exc}", file=sys.stderr)
-    return email, phone
+    return name, email, phone
 
 
 # ── ZIP-aware PDF fetcher ─────────────────────────────────────────────────────
@@ -248,13 +256,10 @@ def _process_item(
     filing_url = pdf_urls[0]
     print(f"  [{cn}/{inum}] {filing_url.split('/')[-1]} …")
     pdf_bytes = _get_pdf_bytes(client, filing_url)
-    email, phone = _extract_contact(pdf_bytes)
+    name, email, phone = _extract_contact(pdf_bytes)
 
     org = item["organization"]
 
-    # Dedup on (org, email) — name blank in v1
-    # TODO Phase 22: extract commenter_name from "By: NAME, TITLE" PDF pattern;
-    # v2 can add Apollo enrichment off the email.
     dedup_key = (org.lower(), email.lower())
     if dedup_key in seen:
         print(f"  [{cn}/{inum}] duplicate ({org}) — skipping")
@@ -262,7 +267,7 @@ def _process_item(
     seen.add(dedup_key)
 
     return [{
-        "commenter_name": "",
+        "commenter_name": name,
         "organization":   org,
         "email":          email,
         "phone":          phone,
