@@ -51,7 +51,13 @@ async def get_active_user_ids() -> list[str]:
 
 
 async def get_user_for_brief(user_id: str) -> dict | None:
-    """Return full user+profile row for a single user, None if no entitlement."""
+    """Return full user+profile+saved_searches row for a single user.
+
+    Returns None if user has no active daily-brief entitlement.
+    tracked_docket_ids is the union of user_profiles.tracked_docket_ids and
+    the user_dockets junction table so both onboarding paths are covered.
+    saved_searches contains only rows where notify=true.
+    """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
@@ -77,7 +83,36 @@ async def get_user_for_brief(user_id: str) -> dict | None:
             {"uid": user_id},
         )
         row = result.mappings().first()
-        return dict(row) if row else None
+        if not row:
+            return None
+        user = dict(row)
+
+        # Merge docket IDs from user_dockets junction (Phase 12a) with
+        # the user_profiles array so both tracking paths are covered.
+        junc = await session.execute(
+            text(
+                "SELECT docket_id::text FROM user_dockets "
+                "WHERE user_id = CAST(:uid AS uuid)"
+            ),
+            {"uid": user_id},
+        )
+        junction_ids = {r[0] for r in junc.fetchall() if r[0]}
+        profile_ids = set(user.get("tracked_docket_ids") or [])
+        user["tracked_docket_ids"] = list(profile_ids | junction_ids)
+
+        # Fetch notify=true saved searches
+        ss_result = await session.execute(
+            text("""
+                SELECT id::text AS id, name, query, notify
+                FROM saved_searches
+                WHERE user_id = CAST(:uid AS uuid) AND notify = true
+                ORDER BY created_at
+            """),
+            {"uid": user_id},
+        )
+        user["saved_searches"] = [dict(r) for r in ss_result.mappings().fetchall()]
+
+        return user
 
 
 async def get_last_brief_date(user_id: str) -> date | None:
@@ -122,6 +157,68 @@ async def get_filings_for_brief(since: datetime, until: datetime) -> list[dict]:
             {"since": since, "until": until},
         )
         return [dict(row) for row in result.mappings().fetchall()]
+
+
+async def get_filings_for_brief_user(
+    since: datetime,
+    until: datetime,
+    bundle: "PredicateBundle",  # nodalpulse.saved_search_predicate.PredicateBundle
+) -> list[dict]:
+    """Filings in the time window filtered by a user's PredicateBundle.
+
+    Returns only filings where at least one implemented predicate matches.
+    Adds a predicate_match_count int field to each row for scoring boost.
+    Returns empty list if bundle.has_implementable_predicates is False —
+    caller is responsible for checking before calling (quiet-day vs global path).
+
+    The docket predicate uses a fragile string join:
+      extraction.payload->>'docket_number'  = dockets.external_id
+    Phase 12b (populate filings.docket_id) will replace this. The recall
+    harness explicitly measures docket miss-rate to surface regressions early.
+    """
+    if not bundle.has_implementable_predicates:
+        return []
+
+    where_clause, params = bundle.build_where_clause()
+    match_expr = bundle.build_match_count_expr()
+
+    params["since"] = since
+    params["until"] = until
+
+    sql_query = f"""
+        SELECT
+            f.id::text          AS filing_id,
+            f.doc_type,
+            f.title,
+            f.filer,
+            f.filed_at,
+            f.r2_key,
+            f.source_url,
+            f.metadata,
+            e.id::text          AS extraction_id,
+            e.payload           AS extraction_payload,
+            e.haiku_verdict,
+            ({match_expr})      AS predicate_match_count
+        FROM filings f
+        JOIN extractions e ON e.filing_id = f.id
+        JOIN sources s ON s.id = f.source_id
+        WHERE f.created_at >= :since
+          AND f.created_at < :until
+          AND e.haiku_verdict IS DISTINCT FROM 'irrelevant'
+          AND ({where_clause})
+        ORDER BY f.filed_at DESC
+    """  # noqa: S608 — no user input reaches this string; all values are bound params
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text(sql_query), params)
+        return [dict(row) for row in result.mappings().fetchall()]
+
+
+# Resolve forward reference used in get_filings_for_brief_user type hint
+try:
+    from nodalpulse.saved_search_predicate import PredicateBundle  # noqa: F401 (type hint only)
+except ImportError:
+    pass
 
 
 async def check_eval_gate() -> bool:

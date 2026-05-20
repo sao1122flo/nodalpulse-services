@@ -148,10 +148,30 @@ def build_brief_html(
     unsubscribe_url: str,
     eval_ok: bool = True,
     item_count: int,
+    filters_active: bool = True,
 ) -> str:
+    """Build the HTML email for a daily brief.
+
+    filters_active=False: prepend an "Add filters" banner for users who have
+    not yet configured markets, dockets, or saved searches. This is the global-
+    fallback path for new or skipped-onboarding users.
+    """
     date_str = brief_date.strftime("%A, %B %-d, %Y")
     gen_ct = generated_at.astimezone(_CHICAGO).strftime("%H:%M CT")
     eval_label = "evals green" if eval_ok else "evals warning"
+
+    banner_html = ""
+    if not filters_active:
+        banner_html = (
+            f'<div style="background:#F5F3FF;border:1px solid #DDD6FE;border-radius:6px;'
+            f'padding:12px 16px;margin:16px 0;font-size:13px;color:#4C1D95;line-height:1.5">'
+            f'<strong>Personalize this brief</strong> &mdash; '
+            f'Add markets, tracked dockets, or keyword searches to focus on filings that '
+            f'matter to you. Today’s brief shows all sources.'
+            f'&nbsp;<a href="{app_url}/settings" '
+            f'style="color:#6366F1;text-decoration:underline">Add filters →</a>'
+            f'</div>\n'
+        )
 
     items_html = ""
     for section_key in ("top_of_mind", "what_changed", "docket_updates"):
@@ -189,7 +209,7 @@ def build_brief_html(
       <a href="{app_url}" class="logo">Nodal<span class="logo-pulse">Pulse</span></a>
       <div class="header-meta">{_esc(date_str)} &middot; {item_count} {item_word}</div>
     </div>
-    {items_html}
+    {banner_html}{items_html}
     <div class="footer">
       <a href="{app_url}/dashboard">View in app</a>
       &nbsp;&middot;&nbsp;

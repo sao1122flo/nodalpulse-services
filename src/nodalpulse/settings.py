@@ -23,5 +23,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     environment: str = "development"
 
+    # Brief personalization
+    max_lookback_days: int = 7
+
 
 settings = Settings()

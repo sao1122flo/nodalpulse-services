@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
@@ -12,10 +12,13 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from nodalpulse.api.auth import verify_bearer
+from nodalpulse.api.qna import QnaRequest, handle_qna
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
 from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.db.extractions import get_filing
 from nodalpulse.queue.pg_queue import enqueue, enqueue_idempotent
+from nodalpulse.saved_search_predicate import build_predicate_bundle
+from nodalpulse.zone_lookup import ilike_patterns_for_zones
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="nodalpulse-services", version="0.1.0")
@@ -258,6 +261,129 @@ async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
     )
 
 
+class FireSavedSearchRequest(BaseModel):
+    user_id: str          # UUID string
+    saved_search_id: str  # UUID string
+
+
+_FIRE_WINDOW_DAYS = 30
+_FIRE_MAX_RESULTS = 25
+
+
+@app.post("/saved-search/fire", dependencies=[Depends(verify_bearer)])
+async def fire_saved_search(body: FireSavedSearchRequest) -> JSONResponse:
+    """Run a single saved search against recent filings and return matches.
+
+    Windows on filings.created_at (crawl time) for the last 30 days.
+    Returns up to 25 filings ordered by
+    filed_at desc. Does NOT write last_fired_at — the web layer handles that.
+    """
+    async with AsyncSessionLocal() as session:
+        # Verify saved search exists and belongs to the user
+        ss_result = await session.execute(
+            text("""
+                SELECT id::text AS id, name, query
+                FROM saved_searches
+                WHERE id = CAST(:ss_id AS uuid)
+                  AND user_id = CAST(:uid AS uuid)
+            """),
+            {"ss_id": body.saved_search_id, "uid": body.user_id},
+        )
+        ss_row = ss_result.mappings().first()
+        if not ss_row:
+            return JSONResponse({"error": "saved search not found"}, status_code=404)
+
+        # Load user's tracked dockets (merge profile array + junction table)
+        profile_result = await session.execute(
+            text("""
+                SELECT
+                    COALESCE(tracked_docket_ids::text[], '{}') AS profile_ids,
+                    COALESCE(tracked_tags, '[]'::json)         AS tracked_tags,
+                    COALESCE(market_roles, '{}')               AS market_roles
+                FROM user_profiles
+                WHERE user_id = CAST(:uid AS uuid)
+            """),
+            {"uid": body.user_id},
+        )
+        profile = profile_result.mappings().first()
+        profile_docket_ids: list[str] = list(profile["profile_ids"]) if profile else []
+        tracked_tags: list[str] = list(profile["tracked_tags"]) if profile else []
+        market_roles: list[str] = list(profile["market_roles"]) if profile else []
+
+        junc_result = await session.execute(
+            text("SELECT docket_id::text FROM user_dockets WHERE user_id = CAST(:uid AS uuid)"),
+            {"uid": body.user_id},
+        )
+        junction_ids = [r[0] for r in junc_result.fetchall() if r[0]]
+        tracked_docket_uuids = list({*profile_docket_ids, *junction_ids})
+
+    zone_patterns = ilike_patterns_for_zones(tracked_tags)
+
+    bundle = build_predicate_bundle(
+        saved_searches=[{"id": str(ss_row["id"]), "query": ss_row["query"]}],
+        tracked_docket_uuids=tracked_docket_uuids,
+        zone_filer_patterns=zone_patterns,
+        market_roles=market_roles,
+    )
+
+    if not bundle.has_implementable_predicates:
+        return JSONResponse({
+            "saved_search_id": body.saved_search_id,
+            "filing_count": 0,
+            "filings": [],
+        })
+
+    until = datetime.now(UTC)
+    since = until - timedelta(days=_FIRE_WINDOW_DAYS)
+    where_clause, params = bundle.build_where_clause()
+    params["since"] = since
+    params["until"] = until
+    params["limit"] = _FIRE_MAX_RESULTS
+
+    sql_query = f"""
+        SELECT
+            f.id::text   AS id,
+            f.title,
+            s.slug       AS source_slug,
+            f.filed_at,
+            f.source_url AS url
+        FROM filings f
+        JOIN sources s ON s.id = f.source_id
+        LEFT JOIN extractions e ON e.filing_id = f.id
+        WHERE f.created_at >= :since
+          AND f.created_at < :until
+          AND e.haiku_verdict IS DISTINCT FROM 'irrelevant'
+          AND ({where_clause})
+        ORDER BY f.filed_at DESC
+        LIMIT :limit
+    """  # noqa: S608 — no user input in this string; all values are bound params
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text(sql_query), params)
+        rows = result.mappings().fetchall()
+
+    filings = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "source_slug": r["source_slug"],
+            "filed_at": r["filed_at"].isoformat() if r["filed_at"] else None,
+            "url": r["url"],
+        }
+        for r in rows
+    ]
+
+    logger.info(
+        "saved-search/fire: user=%s search=%s found=%d",
+        body.user_id, body.saved_search_id, len(filings),
+    )
+    return JSONResponse({
+        "saved_search_id": body.saved_search_id,
+        "filing_count": len(filings),
+        "filings": filings,
+    })
+
+
 class RefreshDocketRequest(BaseModel):
     docket_number: str
     user_id: str         # advisory — bearer token is the security boundary
@@ -344,6 +470,39 @@ async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
         "queued": queued,
         "already_extracted": already_extracted,
     })
+
+
+# ── Q&A ───────────────────────────────────────────────────────────────────────
+
+@app.post("/qna", dependencies=[Depends(verify_bearer)])
+async def qna(body: QnaRequest) -> JSONResponse:
+    """Answer a question about the user's tracked filings.
+
+    Rate-limited by limit_per_day (passed by the web layer from entitlements).
+    Scopes retrieval to the user's predicate bundle. Uses structured extraction
+    payload only — no R2 text retrieval (V1).
+    """
+    return await handle_qna(body)
+
+
+# ── Q&A usage ─────────────────────────────────────────────────────────────────
+
+@app.get("/qna/usage", dependencies=[Depends(verify_bearer)])
+async def qna_usage(user_id: str) -> JSONResponse:
+    """Return today's Q&A question count for a user (America/Chicago day window)."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT COUNT(*) FROM llm_calls
+                WHERE pipeline_stage = 'qna'
+                  AND user_id = CAST(:uid AS uuid)
+                  AND created_at >= date_trunc('day', now() AT TIME ZONE 'America/Chicago')
+                    AT TIME ZONE 'America/Chicago'
+            """),
+            {"uid": user_id},
+        )
+        count = int(result.scalar_one())
+    return JSONResponse({"user_id": user_id, "used_today": count})
 
 
 # ── admin: job inspection and purge ──────────────────────────────────────────

@@ -1,7 +1,33 @@
-"""Job handler for compose-brief queue jobs."""
+"""Job handler for compose-brief queue jobs.
+
+Personalization status (as of Prompt 3 — 2026-05-18):
+
+IMPLEMENTED predicates — wired into get_filings_for_brief_user():
+  * markets (saved_search.query.markets)  → source_id/sources.slug filter
+  * text    (saved_search.query.text)      → ILIKE on title + filer (no tsvector)
+  * dockets (tracked_docket_ids)           → fragile string join via docket_number
+  * zones   (user_profiles.tracked_tags)   → filer-name lookup (zone_lookup.py)
+
+DEFERRED — visible noops, logged via bundle.log_noops():
+  * Role-based filtering (user_profiles.market_roles)
+    → Requires per-filing role tags. Tagger upgrade in Prompt 3.5.
+  * Tag-based filtering (saved_search.query.tags)
+    → Same blocker: no tag column on filings. Prompt 3.5.
+  * Full-text indexed search (tsvector / GIN index)
+    → ILIKE only for now; index + upgrade in Prompt 3.6.
+
+When personalization is active (has_implementable_predicates=True):
+  - Only filings matching at least one predicate enter the brief pool.
+  - Zero matches → quiet-day path. No global backfill.
+
+When personalization is inactive (skipped onboarding / no predicates set):
+  - Global query (current behaviour): all non-irrelevant filings in window.
+  - Brief HTML includes "Add filters" banner.
+"""
 
 import json
 import logging
+import os
 import re
 import unicodedata
 from datetime import UTC, date, datetime, timedelta
@@ -10,6 +36,7 @@ from zoneinfo import ZoneInfo
 from nodalpulse.db.briefs import (
     check_eval_gate,
     get_filings_for_brief,
+    get_filings_for_brief_user,
     get_last_brief_date,
     get_user_for_brief,
     insert_brief,
@@ -24,8 +51,10 @@ from nodalpulse.email.templates import (
 )
 from nodalpulse.llm.client import compose as llm_compose
 from nodalpulse.llm.taxonomy import TEXAS_ELECTRICITY_TAXONOMY
+from nodalpulse.saved_search_predicate import PredicateBundle, build_predicate_bundle
 from nodalpulse.settings import settings
 from nodalpulse.storage import r2
+from nodalpulse.zone_lookup import ilike_patterns_for_zones
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +65,6 @@ COMPOSER_VERSION = "1.0"
 PROMPT_VER = "1.0"
 
 # Strict citation regex — hallucinated citations that don't match are dropped.
-# Matches: [PUCT 56789, p.4 ¶2] or [ERCOT NPRR1287, p.1 ¶1] etc.
 _CITATION_RE = re.compile(
     r"\[(ERCOT|PUCT|FERC|TLO|ERCOT-NPRR|ERCOT-MN)[^\]]+, p\.\d+ ¶\d+\]"
 )
@@ -62,7 +90,7 @@ _COMPOSE_SYSTEM_FULL = _COMPOSE_SYSTEM + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY
 
 # ── scoring ───────────────────────────────────────────────────────────────────
 
-def _score_filing(filing: dict, today: date) -> int:
+def _score_filing(filing: dict, today: date, predicate_match_count: int = 0) -> int:
     score = 0
 
     payload = filing.get("extraction_payload") or {}
@@ -106,6 +134,9 @@ def _score_filing(filing: dict, today: date) -> int:
                     break
             except ValueError:
                 pass
+
+    # Personalization boost — each additional matched predicate adds weight
+    score += predicate_match_count * 10
 
     return score
 
@@ -235,53 +266,135 @@ async def handle_compose_brief(payload: dict) -> dict:
     # Window: last_brief_date+1 → brief_date (handles Fri→Mon 3-day gap correctly)
     last_date = await get_last_brief_date(user_id)
     if last_date:
-        window_since = datetime.combine(last_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=UTC)
+        window_since = datetime.combine(
+            last_date + timedelta(days=1), datetime.min.time()
+        ).replace(tzinfo=UTC)
     else:
-        window_since = datetime.combine(brief_date - timedelta(days=7), datetime.min.time()).replace(tzinfo=UTC)
-    window_until = datetime.combine(brief_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=UTC)
+        window_since = datetime.combine(
+            brief_date - timedelta(days=settings.max_lookback_days),
+            datetime.min.time(),
+        ).replace(tzinfo=UTC)
+    window_until = datetime.combine(
+        brief_date + timedelta(days=1), datetime.min.time()
+    ).replace(tzinfo=UTC)
 
-    # Query filings — citation_dropped items excluded at query level (haiku_verdict != 'irrelevant')
-    filings = await get_filings_for_brief(window_since, window_until)
-    total_corpus = len(filings)
+    # ── Personalization ────────────────────────────────────────────────────────
+
+    zone_patterns = ilike_patterns_for_zones(
+        user.get("tracked_tags") or []
+    )
+    bundle: PredicateBundle = build_predicate_bundle(
+        saved_searches=user.get("saved_searches") or [],
+        tracked_docket_uuids=user.get("tracked_docket_ids") or [],
+        zone_filer_patterns=zone_patterns,
+        market_roles=user.get("market_roles") or [],
+    )
+    bundle.log_noops()
+
+    filters_active = bundle.has_implementable_predicates
+
+    if filters_active:
+        logger.info(
+            "compose-brief personalized: user=%s markets=%s dockets=%d text=%d zones=%d",
+            user_id,
+            bundle.market_slugs,
+            len(bundle.tracked_docket_uuids),
+            len(bundle.text_ilike_patterns),
+            len(bundle.zone_filer_patterns),
+        )
+        filings = await get_filings_for_brief_user(window_since, window_until, bundle)
+        total_corpus = len(filings)
+
+        if not filings:
+            logger.info(
+                "compose-brief quiet-day (zero predicate matches) user=%s", user_id
+            )
+            html = build_quiet_day_html(
+                brief_date=brief_date,
+                corpus_count=0,
+                app_url=settings.app_url,
+                unsubscribe_url=unsubscribe_url,
+            )
+            text_body = (
+                f"Quiet day {brief_date}. "
+                "0 items match your filters. "
+                f"https://nodalpulse.com/digest/{brief_date.isoformat()}"
+            )
+            await send_email(
+                to_email=user["email"],
+                to_name=user.get("name"),
+                subject=f"NodalPulse · Quiet day · {brief_date.strftime('%b %-d')}",
+                html_content=html,
+                text_content=text_body,
+                unsubscribe_url=unsubscribe_url,
+            )
+            return {
+                "user_id": user_id,
+                "status": "quiet_day",
+                "corpus_count": 0,
+                "reason": "no_predicate_matches",
+            }
+    else:
+        # Global fallback — no implementable predicates (skipped onboarding or
+        # role-only context). Shows "Add filters" banner in the email.
+        logger.info(
+            "compose-brief global-fallback (no implementable predicates) user=%s",
+            user_id,
+        )
+        filings = await get_filings_for_brief(window_since, window_until)
+        total_corpus = len(filings)
+
+        if not filings:
+            html = build_quiet_day_html(
+                brief_date=brief_date,
+                corpus_count=0,
+                app_url=settings.app_url,
+                unsubscribe_url=unsubscribe_url,
+            )
+            text_body = (
+                f"Quiet day {brief_date}. "
+                "No filings in window. "
+                f"https://nodalpulse.com/digest/{brief_date.isoformat()}"
+            )
+            await send_email(
+                to_email=user["email"],
+                to_name=user.get("name"),
+                subject=f"NodalPulse · Quiet day · {brief_date.strftime('%b %-d')}",
+                html_content=html,
+                text_content=text_body,
+                unsubscribe_url=unsubscribe_url,
+            )
+            return {
+                "user_id": user_id,
+                "status": "quiet_day",
+                "corpus_count": 0,
+                "reason": "empty_corpus",
+            }
 
     # Score, rank, cap at 25
     today = brief_date
     scored = sorted(
-        [{"filing": f, "score": _score_filing(f, today)} for f in filings],
+        [
+            {
+                "filing": f,
+                "score": _score_filing(
+                    f, today, int(f.get("predicate_match_count") or 0)
+                ),
+            }
+            for f in filings
+        ],
         key=lambda x: x["score"],
         reverse=True,
     )[:25]
-
-    # Quiet day
-    if not scored:
-        html = build_quiet_day_html(
-            brief_date=brief_date,
-            corpus_count=total_corpus,
-            app_url=settings.app_url,
-            unsubscribe_url=unsubscribe_url,
-        )
-        text = (
-            f"Quiet day {brief_date}. "
-            f"0 items match your filters. "
-            f"Corpus had {total_corpus} filings. "
-            f"https://nodalpulse.com/digest/{brief_date.isoformat()}"
-        )
-        await send_email(
-            to_email=user["email"],
-            to_name=user.get("name"),
-            subject=f"NodalPulse · Quiet day · {brief_date.strftime('%b %-d')}",
-            html_content=html,
-            text_content=text,
-            unsubscribe_url=unsubscribe_url,
-        )
-        return {"user_id": user_id, "status": "quiet_day", "corpus_count": total_corpus}
 
     # R2 existence check — drop filings whose source objects are missing
     valid_entries = []
     for entry in scored:
         r2_key = entry["filing"].get("r2_key")
         if r2_key and not r2.exists(r2_key):
-            logger.warning("R2 key missing — dropping filing %s", entry["filing"]["filing_id"])
+            logger.warning(
+                "R2 key missing — dropping filing %s", entry["filing"]["filing_id"]
+            )
             continue
         valid_entries.append(entry)
 
@@ -305,14 +418,18 @@ async def handle_compose_brief(payload: dict) -> dict:
     )
 
     # LLM compose — tool_choice forces structured output
-    composed = await llm_compose(_COMPOSE_SYSTEM_FULL, user_prompt, model=COMPOSER_MODEL, user_id=user_id)
+    composed = await llm_compose(
+        _COMPOSE_SYSTEM_FULL, user_prompt, model=COMPOSER_MODEL, user_id=user_id
+    )
     logger.info("compose: expected %d items, got %d", n_expected, len(composed))
 
     # Count parity check — retry once with explicit filing_id list
     if len(composed) != n_expected:
         logger.warning(
             "Count mismatch %d→%d for user %s — retrying with explicit list",
-            n_expected, len(composed), user_id,
+            n_expected,
+            len(composed),
+            user_id,
         )
         expected_ids = [c["filing_id"] for c in composer_inputs]
         retry_prompt = (
@@ -321,7 +438,9 @@ async def handle_compose_brief(payload: dict) -> dict:
             f"Required filing_ids: {expected_ids}\n\n"
             + user_prompt
         )
-        composed = await llm_compose(_COMPOSE_SYSTEM_FULL, retry_prompt, model=COMPOSER_MODEL, user_id=user_id)
+        composed = await llm_compose(
+            _COMPOSE_SYSTEM_FULL, retry_prompt, model=COMPOSER_MODEL, user_id=user_id
+        )
 
     composed_by_id = {c["filing_id"]: c for c in composed}
 
@@ -341,13 +460,12 @@ async def handle_compose_brief(payload: dict) -> dict:
         citation = item.get("citation", "")
         if not _CITATION_RE.search(citation):
             logger.warning("Bad citation for %s: %r — dropping", fid, citation)
-            # Collect as fallback candidate (uses extracted summary, no composed text)
-            payload = _parse_payload(f.get("extraction_payload"))
+            p = _parse_payload(f.get("extraction_payload"))
             fallback_items.append({
                 "filing_id": fid,
                 "title": f["title"],
-                "summary": payload.get("summary", "Filing summary unavailable; see source."),
-                "citation": _build_citation(payload, f),
+                "summary": p.get("summary", "Filing summary unavailable; see source."),
+                "citation": _build_citation(p, f),
                 "doc_type": f.get("doc_type", ""),
                 "source_url": f.get("source_url", ""),
             })
@@ -370,7 +488,6 @@ async def handle_compose_brief(payload: dict) -> dict:
 
     item_count = sum(len(v) for v in sections.values())
 
-    # If all citations failed, fall back to extraction-only summaries (no LLM prose)
     if item_count == 0:
         logger.warning("All citations failed for user %s — sending fallback brief", user_id)
         for fb in fallback_items[:10]:
@@ -381,12 +498,15 @@ async def handle_compose_brief(payload: dict) -> dict:
     if item_count == 0:
         return {"user_id": user_id, "status": "skipped", "reason": "no_valid_items"}
 
-    # Email subject — NodalPulse voice: specific noun + present-tense verb
+    # Email subject
     top_item = sections["top_of_mind"][0] if sections["top_of_mind"] else (
         sections["what_changed"][0] if sections["what_changed"] else None
     )
     if top_item and item_count > 1:
-        subject = f"{top_item['title'][:60]} · {item_count - 1} more item{'s' if item_count - 1 != 1 else ''}"
+        subject = (
+            f"{top_item['title'][:60]} · "
+            f"{item_count - 1} more item{'s' if item_count - 1 != 1 else ''}"
+        )
     elif top_item:
         subject = top_item["title"][:80]
     else:
@@ -404,6 +524,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         unsubscribe_url=unsubscribe_url,
         eval_ok=eval_ok,
         item_count=item_count,
+        filters_active=filters_active,
     )
     text_content = build_brief_text(
         brief_date=brief_date,
@@ -446,8 +567,13 @@ async def handle_compose_brief(payload: dict) -> dict:
     if msg_id:
         await mark_brief_sent(brief_id)
         logger.info(
-            "Brief sent user=%s email=%s items=%d citations=%d msg_id=%s",
-            user_id, user["email"], item_count, citation_count, msg_id,
+            "Brief sent user=%s email=%s items=%d citations=%d filters=%s msg_id=%s",
+            user_id,
+            user["email"],
+            item_count,
+            citation_count,
+            "active" if filters_active else "global",
+            msg_id,
         )
     else:
         logger.error("Brevo send failed for user %s", user_id)
@@ -459,4 +585,5 @@ async def handle_compose_brief(payload: dict) -> dict:
         "item_count": item_count,
         "citation_count": citation_count,
         "corpus_count": total_corpus,
+        "filters_active": filters_active,
     }
