@@ -30,8 +30,6 @@ import logging
 import os
 import re
 import unicodedata
-
-import httpx
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -593,13 +591,6 @@ async def handle_compose_brief(payload: dict) -> dict:
             "active" if filters_active else "global",
             msg_id,
         )
-        if settings.better_stack_heartbeat_brief_url:
-            try:
-                async with httpx.AsyncClient() as client:
-                    await client.get(settings.better_stack_heartbeat_brief_url, timeout=5.0)
-                logger.info("Better Stack brief heartbeat fired user=%s", user_id)
-            except Exception:
-                logger.warning("Better Stack brief heartbeat failed user=%s — ignoring", user_id)
     else:
         logger.error("Brevo send failed for user %s", user_id)
 

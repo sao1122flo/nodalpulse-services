@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     services_api_key: str = ""
 
     sentry_dsn: str = ""
-    better_stack_heartbeat_crawl_url: str = ""
-    better_stack_heartbeat_brief_url: str = ""
     log_level: str = "INFO"
     environment: str = "development"
 

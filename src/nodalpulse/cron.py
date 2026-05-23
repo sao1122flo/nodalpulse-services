@@ -15,8 +15,6 @@ import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
-
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date
 from nodalpulse.db.scheduler import (
     is_brief_done_for,
@@ -25,7 +23,6 @@ from nodalpulse.db.scheduler import (
     mark_crawl_done_for,
 )
 from nodalpulse.queue.pg_queue import enqueue
-from nodalpulse.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +68,6 @@ async def _tick(now_ct: datetime) -> None:
                 await enqueue("crawl-puct", {"since": since_date}, priority=10)
                 await enqueue("crawl-ercot", {"since": since_date}, priority=10)
                 await mark_crawl_done_for(today)
-                if settings.better_stack_heartbeat_crawl_url:
-                    try:
-                        async with httpx.AsyncClient() as hc:
-                            await hc.get(settings.better_stack_heartbeat_crawl_url, timeout=5.0)
-                        logger.info("Better Stack crawl heartbeat fired")
-                    except Exception:
-                        logger.warning("Better Stack crawl heartbeat failed — ignoring")
                 logger.info("Enqueued crawl-puct + crawl-ercot for %s (since=%s)", today, since_date)
             except Exception:
                 logger.exception("Failed to enqueue crawls for %s — will retry next minute", today)
@@ -112,13 +102,6 @@ async def _startup_catchup(now_ct: datetime) -> None:
                 await enqueue("crawl-puct", {"since": since_date}, priority=10)
                 await enqueue("crawl-ercot", {"since": since_date}, priority=10)
                 await mark_crawl_done_for(today)
-                if settings.better_stack_heartbeat_crawl_url:
-                    try:
-                        async with httpx.AsyncClient() as hc:
-                            await hc.get(settings.better_stack_heartbeat_crawl_url, timeout=5.0)
-                        logger.info("Better Stack crawl heartbeat fired (startup catch-up)")
-                    except Exception:
-                        logger.warning("Better Stack crawl heartbeat failed (startup catch-up) — ignoring")
                 logger.info("Startup catch-up: enqueued crawls for %s (since=%s)", today, since_date)
             except Exception:
                 logger.exception("Startup catch-up: failed to enqueue crawls for %s", today)
