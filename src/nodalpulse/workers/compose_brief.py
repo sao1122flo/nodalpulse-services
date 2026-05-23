@@ -30,6 +30,8 @@ import logging
 import os
 import re
 import unicodedata
+
+import httpx
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -371,6 +373,22 @@ async def handle_compose_brief(payload: dict) -> dict:
                 "reason": "empty_corpus",
             }
 
+    # Role filtering: if the user has market_roles AND a filing has role_tags,
+    # only include the filing when the two sets intersect. Filings without
+    # role_tags (older extractions) pass through unconditionally.
+    user_roles: set[str] = set(user.get("market_roles") or [])
+    if user_roles:
+        def _role_match(f: dict) -> bool:
+            tags: list[str] = (f.get("payload") or {}).get("role_tags") or []
+            return not tags or bool(user_roles.intersection(tags))
+        before_role = len(filings)
+        filings = [f for f in filings if _role_match(f)]
+        if len(filings) < before_role:
+            logger.info(
+                "compose-brief role-filter user=%s kept=%d dropped=%d",
+                user_id, len(filings), before_role - len(filings),
+            )
+
     # Score, rank, cap at 25
     today = brief_date
     scored = sorted(
@@ -575,6 +593,13 @@ async def handle_compose_brief(payload: dict) -> dict:
             "active" if filters_active else "global",
             msg_id,
         )
+        if settings.better_stack_heartbeat_brief_url:
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.get(settings.better_stack_heartbeat_brief_url, timeout=5.0)
+                logger.info("Better Stack brief heartbeat fired user=%s", user_id)
+            except Exception:
+                logger.warning("Better Stack brief heartbeat failed user=%s — ignoring", user_id)
     else:
         logger.error("Brevo send failed for user %s", user_id)
 
