@@ -62,7 +62,7 @@ async def unsubscribe_post(user_id: str) -> HTMLResponse:
             text("""
                 UPDATE entitlements
                 SET expires_at = NOW()
-                WHERE user_id = CAST(:uid AS uuid) AND feature = 'daily-brief'
+                WHERE user_id = CAST(:uid AS uuid) AND feature = 'daily_brief'
             """),
             {"uid": user_id},
         )
@@ -110,25 +110,25 @@ async def brevo_webhook(request: Request) -> JSONResponse:
                 await session.execute(
                     text("""
                         UPDATE entitlements SET expires_at = NOW()
-                        WHERE feature = 'daily-brief'
+                        WHERE feature = 'daily_brief'
                           AND user_id = (SELECT id FROM users WHERE email = :email)
                     """),
                     {"email": email},
                 )
                 await session.commit()
-                logger.warning("Hard bounce for %s — daily-brief entitlement expired", email)
+                logger.warning("Hard bounce for %s — daily_brief entitlement expired", email)
 
             elif event_type == "complaint":
                 await session.execute(
                     text("""
                         UPDATE entitlements SET expires_at = NOW()
-                        WHERE feature = 'daily-brief'
+                        WHERE feature = 'daily_brief'
                           AND user_id = (SELECT id FROM users WHERE email = :email)
                     """),
                     {"email": email},
                 )
                 await session.commit()
-                logger.warning("Spam complaint from %s — daily-brief entitlement expired", email)
+                logger.warning("Spam complaint from %s — daily_brief entitlement expired", email)
 
     return JSONResponse({"ok": True})
 
@@ -503,6 +503,28 @@ async def qna_usage(user_id: str) -> JSONResponse:
         )
         count = int(result.scalar_one())
     return JSONResponse({"user_id": user_id, "used_today": count})
+
+
+# ── brief history export ──────────────────────────────────────────────────────
+
+class BriefHistoryExportRequest(BaseModel):
+    user_id: str
+    user_email: str
+
+
+@app.post("/brief-history/export", dependencies=[Depends(verify_bearer)])
+async def brief_history_export(body: BriefHistoryExportRequest) -> JSONResponse:
+    """Enqueue a brief-history-export job for an Org-tier user.
+
+    The worker fetches all sent briefs from R2, packs them into a zip archive,
+    and emails a presigned download link to user_email.
+    """
+    job_id = await enqueue(
+        "brief-history-export",
+        {"user_id": body.user_id, "user_email": body.user_email},
+        priority=1,
+    )
+    return JSONResponse({"queued": True, "job_id": job_id})
 
 
 # ── admin: job inspection and purge ──────────────────────────────────────────

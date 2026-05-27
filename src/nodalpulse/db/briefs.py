@@ -40,7 +40,7 @@ async def get_active_user_ids() -> list[str]:
             FROM users u
             JOIN user_profiles up ON up.user_id = u.id
             JOIN entitlements e ON e.user_id = u.id
-                AND e.feature = 'daily-brief'
+                AND e.feature = 'daily_brief'
                 AND (e.expires_at IS NULL OR e.expires_at > NOW())
             JOIN subscriptions s ON s.user_id = u.id
                 AND s.status IN ('active', 'trialing')
@@ -72,7 +72,7 @@ async def get_user_for_brief(user_id: str) -> dict | None:
                 FROM users u
                 JOIN user_profiles up ON up.user_id = u.id
                 JOIN entitlements e ON e.user_id = u.id
-                    AND e.feature = 'daily-brief'
+                    AND e.feature = 'daily_brief'
                     AND (e.expires_at IS NULL OR e.expires_at > NOW())
                 JOIN subscriptions s ON s.user_id = u.id
                     AND s.status IN ('active', 'trialing')

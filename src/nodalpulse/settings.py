@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -5,6 +6,20 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     database_url: str
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _fix_db_scheme(cls, v: str) -> str:
+        """Railway's Postgres Reference resolves to postgresql:// (sync driver).
+        The codebase uses async SQLAlchemy + asyncpg, so we rewrite the scheme
+        at load time. Also handles Heroku-style postgres:// for defensive parity.
+        Without this, services + worker + scheduler all crash with
+        ModuleNotFoundError: No module named 'psycopg2' on boot."""
+        for prefix in ("postgres://", "postgresql://"):
+            if v.startswith(prefix):
+                return "postgresql+asyncpg://" + v[len(prefix):]
+        return v
+
     anthropic_api_key: str
 
     r2_access_key_id: str
