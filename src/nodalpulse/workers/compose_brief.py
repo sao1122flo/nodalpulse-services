@@ -247,6 +247,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         logger.warning("Eval gate failed — maintenance notice to %s", user["email"])
         html = build_maintenance_html(
             brief_date=brief_date,
+            app_url=settings.app_url,
             unsubscribe_url=unsubscribe_url,
         )
         text = (

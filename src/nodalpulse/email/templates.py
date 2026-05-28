@@ -233,7 +233,6 @@ def build_quiet_day_html(
     unsubscribe_url: str,
 ) -> str:
     date_str = brief_date.strftime("%A, %B %-d, %Y")
-    digest_url = f"https://nodalpulse.com/digest/{brief_date.isoformat()}"
     filing_word = "filing" if corpus_count == 1 else "filings"
 
     return f"""<!DOCTYPE html>
@@ -243,38 +242,24 @@ def build_quiet_day_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>NodalPulse &middot; Quiet day &middot; {_esc(date_str)}</title>
-  <style>
-    body {{
-        font-family: {_FONT_STACK};
-        font-size: 14px;
-        line-height: 1.55;
-        color: #44403C;
-        background: #FFFFFF;
-        margin: 0;
-        padding: 0;
-    }}
-    .wrapper {{ max-width: 600px; margin: 0 auto; padding: 24px 16px; }}
-    .footer {{
-        border-top: 1px solid #E5E5E7;
-        padding-top: 16px;
-        margin-top: 24px;
-        font-size: 12px;
-        color: #71717A;
-    }}
-    .footer a {{ color: #71717A; text-decoration: underline; }}
-  </style>
+  <style>{_base_styles()}</style>
 </head>
 <body>
   <div class="wrapper">
-    <p style="font-size:15px;font-weight:600;color:#18181B;margin:0 0 12px">
-      Quiet day &mdash; {_esc(date_str)}
-    </p>
-    <p style="margin:0 0 16px">
-      0 items match your filters.
-      The full corpus had {corpus_count} {filing_word}.
-      <a href="{digest_url}" style="color:#6366F1">View the public digest.</a>
-    </p>
+    <div class="header">
+      <a href="{app_url}" class="logo">Nodal<span class="logo-pulse">Pulse</span></a>
+      <div class="header-meta">{_esc(date_str)}</div>
+    </div>
+    <div style="padding:24px 0 8px">
+      <p style="font-size:15px;font-weight:600;color:#18181B;margin:0 0 8px">Quiet day</p>
+      <p style="margin:0;color:#71717A;font-size:14px;line-height:1.55">
+        0 items match your filters.
+        The full corpus had {corpus_count} {filing_word}.
+      </p>
+    </div>
     <div class="footer">
+      <a href="{app_url}/dashboard">View in app</a>
+      &nbsp;&middot;&nbsp;
       <a href="{unsubscribe_url}">Unsubscribe</a>
       &nbsp;&middot;&nbsp;
       <a href="https://nodalpulse.com/status">Status</a>
@@ -284,7 +269,7 @@ def build_quiet_day_html(
 </html>"""
 
 
-def build_maintenance_html(*, brief_date: date, unsubscribe_url: str) -> str:
+def build_maintenance_html(*, brief_date: date, app_url: str, unsubscribe_url: str) -> str:
     date_str = brief_date.strftime("%A, %B %-d, %Y")
 
     return f"""<!DOCTYPE html>
@@ -294,39 +279,26 @@ def build_maintenance_html(*, brief_date: date, unsubscribe_url: str) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>NodalPulse &middot; Pipeline maintenance</title>
-  <style>
-    body {{
-        font-family: {_FONT_STACK};
-        font-size: 14px;
-        line-height: 1.55;
-        color: #44403C;
-        background: #FFFFFF;
-        margin: 0;
-        padding: 0;
-    }}
-    .wrapper {{ max-width: 600px; margin: 0 auto; padding: 24px 16px; }}
-    .footer {{
-        border-top: 1px solid #E5E5E7;
-        padding-top: 16px;
-        margin-top: 24px;
-        font-size: 12px;
-        color: #71717A;
-    }}
-    .footer a {{ color: #71717A; text-decoration: underline; }}
-  </style>
+  <style>{_base_styles()}</style>
 </head>
 <body>
   <div class="wrapper">
-    <p style="font-size:15px;font-weight:600;color:#18181B;margin:0 0 12px">
-      Pipeline maintenance &mdash; {_esc(date_str)}
-    </p>
-    <p style="margin:0 0 16px">
-      Today&rsquo;s brief is paused while the extraction pipeline is under maintenance.
-      Check
-      <a href="https://nodalpulse.com/status" style="color:#6366F1">nodalpulse.com/status</a>
-      for updates.
-    </p>
+    <div class="header">
+      <a href="{app_url}" class="logo">Nodal<span class="logo-pulse">Pulse</span></a>
+      <div class="header-meta">{_esc(date_str)}</div>
+    </div>
+    <div style="padding:24px 0 8px">
+      <p style="font-size:15px;font-weight:600;color:#18181B;margin:0 0 8px">Pipeline maintenance</p>
+      <p style="margin:0;color:#71717A;font-size:14px;line-height:1.55">
+        Today&rsquo;s brief is paused while the extraction pipeline is under maintenance.
+        Check
+        <a href="https://nodalpulse.com/status" style="color:#6366F1">nodalpulse.com/status</a>
+        for updates.
+      </p>
+    </div>
     <div class="footer">
+      <a href="{app_url}/dashboard">View in app</a>
+      &nbsp;&middot;&nbsp;
       <a href="{unsubscribe_url}">Unsubscribe</a>
       &nbsp;&middot;&nbsp;
       <a href="https://nodalpulse.com/status">Status</a>
