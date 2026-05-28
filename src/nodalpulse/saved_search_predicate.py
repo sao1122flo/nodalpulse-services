@@ -8,7 +8,7 @@ get translated into SQL-ready filtering parameters. Imported by:
 Implementable predicates (Prompt 3):
   - query.markets    → source slug = ANY(...)  via sources.slug
   - query.text       → ILIKE on filings.title + filings.filer  (no tsvector yet)
-  - query.docket_ids → subquery: dockets.external_id match for tracked docket UUIDs
+  - query.docket_ids → f.docket_id FK match for tracked docket UUIDs
   - tracked_tags     → ERCOT zone filer patterns via zone_lookup  (passed in pre-built)
 
 DEFERRED — visible noops logged to stdout for metrics visibility:
@@ -80,10 +80,7 @@ class PredicateBundle:
         params: dict = {}
 
         if self.tracked_docket_uuids:
-            conditions.append(
-                "e.payload->>'docket_number' IN "
-                "(SELECT external_id FROM dockets WHERE id::text = ANY(:docket_ids))"
-            )
+            conditions.append("f.docket_id::text = ANY(:docket_ids)")
             params["docket_ids"] = self.tracked_docket_uuids
 
         if self.market_slugs:
@@ -112,11 +109,7 @@ class PredicateBundle:
         cases: list[str] = []
 
         if self.tracked_docket_uuids:
-            cases.append(
-                "CASE WHEN e.payload->>'docket_number' IN "
-                "(SELECT external_id FROM dockets WHERE id::text = ANY(:docket_ids)) "
-                "THEN 1 ELSE 0 END"
-            )
+            cases.append("CASE WHEN f.docket_id::text = ANY(:docket_ids) THEN 1 ELSE 0 END")
         if self.market_slugs:
             cases.append("CASE WHEN s.slug = ANY(:market_slugs) THEN 1 ELSE 0 END")
         if self.text_ilike_patterns:

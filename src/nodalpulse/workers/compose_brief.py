@@ -5,7 +5,7 @@ Personalization status (as of Prompt 3 — 2026-05-18):
 IMPLEMENTED predicates — wired into get_filings_for_brief_user():
   * markets (saved_search.query.markets)  → source_id/sources.slug filter
   * text    (saved_search.query.text)      → ILIKE on title + filer (no tsvector)
-  * dockets (tracked_docket_ids)           → fragile string join via docket_number
+  * dockets (tracked_docket_ids)           → FK join via filings.docket_id
   * zones   (user_profiles.tracked_tags)   → filer-name lookup (zone_lookup.py)
 
 DEFERRED — visible noops, logged via bundle.log_noops():

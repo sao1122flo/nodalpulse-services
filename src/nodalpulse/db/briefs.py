@@ -171,10 +171,8 @@ async def get_filings_for_brief_user(
     Returns empty list if bundle.has_implementable_predicates is False —
     caller is responsible for checking before calling (quiet-day vs global path).
 
-    The docket predicate uses a fragile string join:
-      extraction.payload->>'docket_number'  = dockets.external_id
-    Phase 12b (populate filings.docket_id) will replace this. The recall
-    harness explicitly measures docket miss-rate to surface regressions early.
+    The docket predicate uses a direct FK join on filings.docket_id (Phase 12b complete).
+    NOTE: eval/recall.py docket tests still seed extraction payload — follow-up needed.
     """
     if not bundle.has_implementable_predicates:
         return []
