@@ -4,9 +4,9 @@ Tests cover:
   #16 — _is_hallucinated_summary: exact match, case variants, false positives
   #16 — _has_claims: all claim-field combinations
   #16 — filter_no_claims: drops zero-claim candidates, warns at >50%
-  #17 — dedup_candidates: (title, docket_id) key, richness tiebreaker,
-         filed_at-order tiebreak, cross-docket same-title safety,
-         empty-title pass-through, 38× crawler fanout case
+  #17 — dedup_candidates: item_key dedup, richness tiebreaker,
+         filed_at-order tiebreak, no-item-key pass-through (ERCOT),
+         38× different-party same-title case all kept
 """
 
 import logging
@@ -15,6 +15,7 @@ from datetime import date
 import pytest
 
 from nodalpulse.workers.compose_brief import (
+    _extract_item_key,
     _has_claims,
     _is_hallucinated_summary,
     dedup_candidates,
@@ -28,7 +29,10 @@ D2 = "bbbb0000-0000-0000-0000-000000000002"
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 def _filing(filing_id: str, title: str = "Test Filing", docket_id: str | None = D1,
-            payload: dict | None = None) -> dict:
+            payload: dict | None = None, item_key: str | None = None) -> dict:
+    metadata: dict = {}
+    if item_key:
+        metadata["item_key"] = item_key
     return {
         "filing_id": filing_id,
         "title": title,
@@ -36,6 +40,7 @@ def _filing(filing_id: str, title: str = "Test Filing", docket_id: str | None = 
         "filer": "",
         "filed_at": date(2026, 5, 27),
         "docket_id": docket_id,
+        "metadata": metadata,
         "extraction_payload": payload if payload is not None else {},
     }
 
@@ -156,11 +161,33 @@ class TestFilterNoClaims:
 
 # ── #17: dedup_candidates ────────────────────────────────────────────────────
 
+class TestExtractItemKey:
+    def test_returns_item_key_from_dict_metadata(self):
+        f = _filing("a1", item_key="59070_448")
+        assert _extract_item_key(f) == "59070_448"
+
+    def test_returns_none_when_no_metadata(self):
+        f = _filing("a1")  # no item_key
+        assert _extract_item_key(f) is None
+
+    def test_parses_json_string_metadata(self):
+        import json
+        f = _filing("a1")
+        f["metadata"] = json.dumps({"item_key": "59070_448"})
+        assert _extract_item_key(f) == "59070_448"
+
+    def test_returns_none_for_empty_string_item_key(self):
+        f = _filing("a1")
+        f["metadata"] = {"item_key": ""}
+        assert _extract_item_key(f) is None
+
+
 class TestDedupCandidates:
-    def test_same_title_same_docket_reduces_to_one(self):
+    def test_same_item_key_reduces_to_one(self):
+        # ZIP + PDF of the same submission share item_key → collapsed
         filings = [
-            _filing("a1", title="Bishop Testimony", docket_id=D1),
-            _filing("a2", title="Bishop Testimony", docket_id=D1),
+            _filing("a1", title="Bishop Testimony", item_key="59475_100"),
+            _filing("a2", title="Bishop Testimony", item_key="59475_100"),
         ]
         assert len(dedup_candidates(filings)) == 1
 
@@ -168,81 +195,88 @@ class TestDedupCandidates:
         rich = {"summary": "Detailed summary.", "key_points": ["A", "B", "C"]}
         sparse = {"summary": "Short."}
         filings = [
-            _filing("a1", title="Bishop Testimony", docket_id=D1, payload=sparse),
-            _filing("a2", title="Bishop Testimony", docket_id=D1, payload=rich),
+            _filing("a1", title="Bishop Testimony", item_key="59475_100", payload=sparse),
+            _filing("a2", title="Bishop Testimony", item_key="59475_100", payload=rich),
         ]
         result = dedup_candidates(filings)
         assert result[0]["filing_id"] == "a2"
 
     def test_tiebreak_keeps_first_seen(self):
-        # Equal richness — first seen (most recently filed, per DESC order) wins
+        # Equal richness — first seen (most recently filed, per DESC sort) wins
         same = {"summary": "Same content."}
         filings = [
-            _filing("first",  title="Bishop Testimony", docket_id=D1, payload=same),
-            _filing("second", title="Bishop Testimony", docket_id=D1, payload=same),
+            _filing("first",  title="Bishop Testimony", item_key="59475_100", payload=same),
+            _filing("second", title="Bishop Testimony", item_key="59475_100", payload=same),
         ]
         result = dedup_candidates(filings)
         assert result[0]["filing_id"] == "first"
 
-    def test_different_titles_same_docket_both_kept(self):
+    def test_different_item_keys_same_title_both_kept(self):
+        # THE CORE FIX: different parties filing the same doc type → different item_keys → both kept
         filings = [
-            _filing("a1", title="Bishop Testimony",       docket_id=D1),
-            _filing("a2", title="Wesely Protective Order", docket_id=D1),
+            _filing("a1", title="Statement of Position", docket_id=D1, item_key="59475_100"),
+            _filing("a2", title="Statement of Position", docket_id=D1, item_key="59475_101"),
         ]
         assert len(dedup_candidates(filings)) == 2
 
-    def test_same_title_different_docket_both_kept(self):
+    def test_different_item_keys_different_dockets_both_kept(self):
         filings = [
-            _filing("a1", title="Initial Brief", docket_id=D1),
-            _filing("a2", title="Initial Brief", docket_id=D2),
+            _filing("a1", title="Initial Brief", docket_id=D1, item_key="59070_10"),
+            _filing("a2", title="Initial Brief", docket_id=D2, item_key="59475_10"),
         ]
         assert len(dedup_candidates(filings)) == 2
 
-    def test_empty_title_all_kept(self):
+    def test_no_item_key_all_kept(self):
+        # ERCOT filings have no item_key — all pass through without dedup
         filings = [
-            _filing("a1", title="",           docket_id=D1),
-            _filing("a2", title="",           docket_id=D1),
-            _filing("a3", title="Real Title", docket_id=D1),
+            _filing("a1", title="Market Notice"),
+            _filing("a2", title="Market Notice"),
+            _filing("a3", title="Market Notice"),
         ]
-        result = dedup_candidates(filings)
-        # a1 + a2 kept via no-title path; a3 kept via seen dict
-        assert len(result) == 3
+        assert len(dedup_candidates(filings)) == 3
 
-    def test_three_duplicates_reduces_to_one(self):
+    def test_mixed_item_key_and_no_key(self):
         filings = [
-            _filing(f"f{i}", title="Statement of Position", docket_id=D1)
+            _filing("a1", title="PUCT Filing", item_key="59070_1"),
+            _filing("a2", title="PUCT Filing", item_key="59070_1"),  # dup of a1
+            _filing("a3", title="ERCOT Notice"),  # no key, pass-through
+        ]
+        # a1+a2 collapse to 1, a3 passes through
+        assert len(dedup_candidates(filings)) == 2
+
+    def test_three_files_same_item_key_reduces_to_one(self):
+        # Submission with 3 attachments (PDF, ZIP, DOCX) → keep richest
+        filings = [
+            _filing(f"f{i}", title="Direct Testimony", item_key="59475_200")
             for i in range(3)
         ]
         assert len(dedup_candidates(filings)) == 1
 
-    def test_38x_crawler_fanout_reduces_to_one(self):
+    def test_38x_different_parties_all_kept(self):
+        # THE REGRESSION TEST: 38 different companies filing same type → 38 different item_keys
+        # Old behavior incorrectly collapsed these to 1. New behavior keeps all 38.
         filings = [
-            _filing(f"f{i}", title="CY 2026 Registration", docket_id=D1)
+            _filing(f"f{i}", title="CY 2026 Registration", docket_id=D1,
+                    item_key=f"59070_{448 + i}")
             for i in range(38)
         ]
-        assert len(dedup_candidates(filings)) == 1
+        assert len(dedup_candidates(filings)) == 38
 
-    def test_title_comparison_case_insensitive(self):
+    def test_zip_pdf_pair_reduces_to_one(self):
+        # Real-world: same submission, one ZIP + one PDF → both share item_key → collapse to 1
         filings = [
-            _filing("a1", title="BISHOP TESTIMONY", docket_id=D1),
-            _filing("a2", title="Bishop Testimony", docket_id=D1),
-            _filing("a3", title="bishop testimony", docket_id=D1),
+            _filing("zip", title="Joint Application", item_key="59336_2367"),
+            _filing("pdf", title="Joint Application", item_key="59336_2367"),
         ]
         assert len(dedup_candidates(filings)) == 1
 
-    def test_title_comparison_strips_whitespace(self):
-        filings = [
-            _filing("a1", title="  Bishop Testimony  ", docket_id=D1),
-            _filing("a2", title="Bishop Testimony",     docket_id=D1),
-        ]
-        assert len(dedup_candidates(filings)) == 1
-
-    def test_ercot_filings_none_docket_dedup_by_title(self):
+    def test_ercot_filings_no_item_key_all_pass_through(self):
+        # ERCOT filings don't carry item_key — all are kept regardless of title
         filings = [
             _filing("a1", title="NPRR 1234 Revision", docket_id=None),
             _filing("a2", title="NPRR 1234 Revision", docket_id=None),
         ]
-        assert len(dedup_candidates(filings)) == 1
+        assert len(dedup_candidates(filings)) == 2
 
     def test_empty_input(self):
         assert dedup_candidates([]) == []
@@ -254,8 +288,9 @@ class TestDedupCandidates:
         assert result[0]["filing_id"] == "solo"
 
     def test_drop_count_logged(self, caplog):
+        # 24 filings sharing one item_key → 23 dropped, 1 kept
         filings = [
-            _filing(f"f{i}", title="Direct Testimony", docket_id=D1)
+            _filing(f"f{i}", title="Direct Testimony", docket_id=D1, item_key="59475_999")
             for i in range(24)
         ]
         with caplog.at_level(logging.INFO, logger="nodalpulse.workers.compose_brief"):

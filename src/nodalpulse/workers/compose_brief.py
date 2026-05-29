@@ -409,16 +409,29 @@ def filter_no_claims(filings: list[dict]) -> list[dict]:
 
 # ── #17 dedup ─────────────────────────────────────────────────────────────────
 
-def dedup_candidates(filings: list[dict]) -> list[dict]:
-    """Dedup by (title, docket_id). filer is always empty for PUCT crawler.
+def _extract_item_key(f: dict) -> str | None:
+    """Return item_key from filing metadata, or None if absent."""
+    metadata = f.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    return metadata.get("item_key") or None
 
+
+def dedup_candidates(filings: list[dict]) -> list[dict]:
+    """Dedup by item_key (PUCT: '{control_number}_{item_number}').
+
+    ZIP+PDF pairs of the same submission share item_key and are collapsed to
+    the richest extraction. Different parties filing the same document type
+    have different item_numbers, so their submissions are preserved.
+    Filings without item_key (e.g. ERCOT) pass through without deduplication.
     Keeps the richest extraction (by JSON payload size). Ties broken by
-    filed_at DESC (most recently filed wins). Explicit sort makes this
-    order-independent from upstream query ordering.
-    Filings with no title are kept as-is via a per-filing fallback path.
+    filed_at DESC (most recently filed wins).
     """
-    seen: dict[tuple, dict] = {}
-    no_title: list[dict] = []
+    seen: dict[str, dict] = {}
+    no_key: list[dict] = []
 
     def _filed_at_key(f: dict) -> str:
         v = f.get("filed_at")
@@ -427,11 +440,10 @@ def dedup_candidates(filings: list[dict]) -> list[dict]:
     sorted_filings = sorted(filings, key=_filed_at_key, reverse=True)
 
     for f in sorted_filings:
-        title = (f.get("title") or "").strip().lower()
-        if not title:
-            no_title.append(f)
+        key = _extract_item_key(f)
+        if not key:
+            no_key.append(f)
             continue
-        key = (title, f.get("docket_id"))
         existing = seen.get(key)
         if existing is None:
             seen[key] = f
@@ -441,11 +453,11 @@ def dedup_candidates(filings: list[dict]) -> list[dict]:
             if new_richness > old_richness:
                 seen[key] = f
 
-    result = list(seen.values()) + no_title
-    dropped = len(sorted_filings) - len(no_title) - len(seen)
+    result = list(seen.values()) + no_key
+    dropped = len(sorted_filings) - len(no_key) - len(seen)
     if dropped:
         logger.info(
-            "dedup_candidates: %d→%d (dropped %d duplicates)",
+            "dedup_candidates: %d→%d (dropped %d same-item duplicates)",
             len(filings),
             len(result),
             dropped,
