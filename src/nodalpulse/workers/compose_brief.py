@@ -370,6 +370,89 @@ def _build_composer_input(entry: dict) -> dict:
     }
 
 
+# ── #16 hallucination filter ─────────────────────────────────────────────────
+
+def _is_hallucinated_summary(summary: str) -> bool:
+    return summary.lower().startswith("filing summary unavailable")
+
+
+def _has_claims(filing: dict) -> bool:
+    payload = _parse_payload(filing.get("extraction_payload"))
+    return bool(
+        payload.get("summary")
+        or payload.get("relief_requested")
+        or payload.get("outcome")
+        or (payload.get("key_points") or [])
+    )
+
+
+def filter_no_claims(filings: list[dict]) -> list[dict]:
+    """Pre-allocate safety net: drop candidates whose extraction has no claims.
+
+    The LLM is instructed to write 'Filing summary unavailable' when claims=[].
+    Filtering here prevents wasting compose tokens and eliminates that path.
+    Logs a warning if >50% are dropped — that signals an upstream extraction issue.
+    """
+    before = len(filings)
+    result = [f for f in filings if _has_claims(f)]
+    dropped = before - len(result)
+    if dropped:
+        logger.info("filter_no_claims: dropped %d/%d zero-claim candidates", dropped, before)
+        if before > 0 and dropped / before > 0.5:
+            logger.warning(
+                "filter_no_claims: >50%% zero-claim (%d/%d) — upstream extraction quality issue",
+                dropped,
+                before,
+            )
+    return result
+
+
+# ── #17 dedup ─────────────────────────────────────────────────────────────────
+
+def dedup_candidates(filings: list[dict]) -> list[dict]:
+    """Dedup by (title, docket_id). filer is always empty for PUCT crawler.
+
+    Keeps the richest extraction (by JSON payload size). Ties broken by
+    filed_at DESC (most recently filed wins). Explicit sort makes this
+    order-independent from upstream query ordering.
+    Filings with no title are kept as-is via a per-filing fallback path.
+    """
+    seen: dict[tuple, dict] = {}
+    no_title: list[dict] = []
+
+    def _filed_at_key(f: dict) -> str:
+        v = f.get("filed_at")
+        return v.isoformat() if v is not None and hasattr(v, "isoformat") else ""
+
+    sorted_filings = sorted(filings, key=_filed_at_key, reverse=True)
+
+    for f in sorted_filings:
+        title = (f.get("title") or "").strip().lower()
+        if not title:
+            no_title.append(f)
+            continue
+        key = (title, f.get("docket_id"))
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = f
+        else:
+            new_richness = len(json.dumps(f.get("extraction_payload") or {}))
+            old_richness = len(json.dumps(existing.get("extraction_payload") or {}))
+            if new_richness > old_richness:
+                seen[key] = f
+
+    result = list(seen.values()) + no_title
+    dropped = len(sorted_filings) - len(no_title) - len(seen)
+    if dropped:
+        logger.info(
+            "dedup_candidates: %d→%d (dropped %d duplicates)",
+            len(filings),
+            len(result),
+            dropped,
+        )
+    return result
+
+
 # ── main handler ──────────────────────────────────────────────────────────────
 
 async def handle_compose_brief(payload: dict) -> dict:
@@ -533,6 +616,10 @@ async def handle_compose_brief(payload: dict) -> dict:
                 user_id, len(filings), before_role - len(filings),
             )
 
+    # ── Dedup + pre-allocate hallucination safety net ────────────────────────
+    filings = dedup_candidates(filings)
+    filings = filter_no_claims(filings)
+
     # ── Allocation ────────────────────────────────────────────────────────────
     # Per-docket path: user has tracked dockets + personalization active.
     # Flat path: global fallback or market/text/zone-only (no tracked dockets).
@@ -632,10 +719,11 @@ async def handle_compose_brief(payload: dict) -> dict:
     docket_items_out: dict[str, list[dict]] = defaultdict(list)
     valid_filing_ids: list[str] = []
     citation_count = 0
+    hallucination_drop_count = 0
     fallback_items: list[dict] = []
 
     def _process_entry(entry: dict) -> None:
-        nonlocal citation_count
+        nonlocal citation_count, hallucination_drop_count
         f = entry["filing"]
         fid = f["filing_id"]
         dest = entry.get("_dest", "what_changed")
@@ -656,10 +744,15 @@ async def handle_compose_brief(payload: dict) -> dict:
                 **_deadline_badge_info(p, brief_date),
             })
             return
+        summary = item_data["summary"]
+        if _is_hallucinated_summary(summary):
+            hallucination_drop_count += 1
+            logger.warning("Hallucinated summary for filing %s — dropping", fid)
+            return
         item_dict = {
             "filing_id": fid,
             "title": f["title"],
-            "summary": item_data["summary"],
+            "summary": summary,
             "citation": citation,
             "doc_type": f.get("doc_type", ""),
             "source_url": f.get("source_url", ""),
@@ -676,6 +769,20 @@ async def handle_compose_brief(payload: dict) -> dict:
 
     for entry in all_sections_ordered:
         _process_entry(entry)
+
+    if hallucination_drop_count > 0:
+        logger.info(
+            "compose: dropped %d hallucinated summaries for user=%s",
+            hallucination_drop_count,
+            user_id,
+        )
+        if n_expected > 0 and hallucination_drop_count / n_expected > 0.5:
+            logger.warning(
+                "compose: >50%% hallucinated summaries (%d/%d) — investigate compose prompt for user=%s",
+                hallucination_drop_count,
+                n_expected,
+                user_id,
+            )
 
     # Build final docket sections list (preserves allocate_brief order)
     final_docket_sections: list[dict] = []
