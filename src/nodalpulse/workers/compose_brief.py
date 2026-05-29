@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import unicodedata
+from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -59,6 +60,10 @@ from nodalpulse.zone_lookup import ilike_patterns_for_zones
 logger = logging.getLogger(__name__)
 
 _CHICAGO = ZoneInfo("America/Chicago")
+
+BRIEF_ITEM_CAP = 25
+TOP_OF_MIND_COUNT = 5
+PER_DOCKET_CEILING = 12
 
 COMPOSER_MODEL = "claude-sonnet-4-6"
 COMPOSER_VERSION = "1.0"
@@ -139,6 +144,146 @@ def _score_filing(filing: dict, today: date, predicate_match_count: int = 0) -> 
     score += predicate_match_count * 10
 
     return score
+
+
+# ── per-docket allocation ─────────────────────────────────────────────────────
+
+def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
+    """Return nearest upcoming deadline/effective_date within 30 days for badge rendering."""
+    result: dict = {"nearest_deadline_date": None, "nearest_effective_date": None}
+    eff = payload.get("effective_date")
+    if eff:
+        try:
+            eff_d = date.fromisoformat(str(eff)[:10])
+            if 0 <= (eff_d - brief_date).days <= 30:
+                result["nearest_effective_date"] = eff_d.isoformat()
+        except ValueError:
+            pass
+    soonest = None
+    for dl in payload.get("deadlines") or []:
+        d_str = dl.get("date") if isinstance(dl, dict) else None
+        if d_str:
+            try:
+                d = date.fromisoformat(str(d_str)[:10])
+                if 0 <= (d - brief_date).days <= 30:
+                    if soonest is None or d < soonest:
+                        soonest = d
+            except ValueError:
+                pass
+    if soonest:
+        result["nearest_deadline_date"] = soonest.isoformat()
+    return result
+
+
+def allocate_brief(
+    candidates: list[dict],
+    tracked_docket_uuids: list[str],
+    brief_date: date,
+) -> dict:
+    """Allocate candidates into top_of_mind + per-docket sections.
+
+    Returns:
+        {
+          "top_of_mind": [{"filing": f, "score": s}, ...],
+          "docket_sections": [
+              {"docket_id": str, "external_id": str|None,
+               "items": [{"filing": f, "score": s}],
+               "pool_total": int, "section_score": int},
+              ...
+          ]
+        }
+    TOP_OF_MIND: top TOP_OF_MIND_COUNT globally, regardless of docket.
+    Body: remaining slots distributed by per-docket floor+bonus, capped at
+    PER_DOCKET_CEILING per docket (overridden to remaining_slots when only
+    one active docket, to avoid underutilising the brief cap).
+    Overflow path (more active dockets than body slots): top N by best score
+    each get 1 slot.
+    """
+    if not candidates:
+        return {"top_of_mind": [], "docket_sections": []}
+
+    scored = [
+        {
+            "filing": f,
+            "score": _score_filing(f, brief_date, int(f.get("predicate_match_count") or 0)),
+        }
+        for f in candidates
+    ]
+    scored.sort(key=lambda x: x["score"], reverse=True)
+
+    top_of_mind = scored[:TOP_OF_MIND_COUNT]
+    tom_ids = {e["filing"]["filing_id"] for e in top_of_mind}
+    remaining = [e for e in scored if e["filing"]["filing_id"] not in tom_ids]
+
+    docket_pools: dict[str, list] = defaultdict(list)
+    for entry in remaining:
+        docket_id = entry["filing"].get("docket_id")
+        if docket_id:
+            docket_pools[docket_id].append(entry)
+
+    active_dockets = [d for d in tracked_docket_uuids if docket_pools.get(d)]
+    n_active = len(active_dockets)
+    remaining_slots = BRIEF_ITEM_CAP - len(top_of_mind)
+    effective_ceiling = remaining_slots if n_active == 1 else PER_DOCKET_CEILING
+
+    allocated: dict[str, list] = defaultdict(list)
+
+    if n_active > 0:
+        if n_active <= remaining_slots:
+            for d in active_dockets:
+                allocated[d].append(docket_pools[d][0])
+            cursors = {d: 1 for d in active_dockets}
+            for _ in range(remaining_slots - n_active):
+                best_d, best_s = None, -1
+                for d in active_dockets:
+                    if len(allocated[d]) >= effective_ceiling:
+                        continue
+                    idx = cursors[d]
+                    if idx >= len(docket_pools[d]):
+                        continue
+                    s = docket_pools[d][idx]["score"]
+                    if s > best_s:
+                        best_s, best_d = s, d
+                if best_d is None:
+                    break
+                allocated[best_d].append(docket_pools[best_d][cursors[best_d]])
+                cursors[best_d] += 1
+        else:
+            by_best = sorted(
+                active_dockets,
+                key=lambda d: docket_pools[d][0]["score"],
+                reverse=True,
+            )
+            for d in by_best[:remaining_slots]:
+                allocated[d].append(docket_pools[d][0])
+
+    docket_sections = []
+    for d in allocated:
+        tom_count = sum(1 for e in top_of_mind if e["filing"].get("docket_id") == d)
+        ext_id = allocated[d][0]["filing"].get("docket_external_id") if allocated[d] else None
+        docket_sections.append({
+            "docket_id": d,
+            "external_id": ext_id,
+            "items": list(allocated[d]),
+            "pool_total": len(docket_pools[d]) + tom_count,
+            "section_score": max(e["score"] for e in allocated[d]),
+        })
+    docket_sections.sort(key=lambda s: s["section_score"], reverse=True)
+
+    return {"top_of_mind": top_of_mind, "docket_sections": docket_sections}
+
+
+def _build_subject(top_item: dict | None, item_count: int, brief_date: date) -> str:
+    if top_item and item_count > 1:
+        rest = item_count - 1
+        return (
+            f"{top_item['title'][:60]} · "
+            f"{rest} more item{'s' if rest != 1 else ''}"
+        )
+    if top_item:
+        return top_item["title"][:80]
+    month = brief_date.strftime("%b")
+    return f"NodalPulse · {month} {brief_date.day} · {item_count} items"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -388,41 +533,62 @@ async def handle_compose_brief(payload: dict) -> dict:
                 user_id, len(filings), before_role - len(filings),
             )
 
-    # Score, rank, cap at 25
-    today = brief_date
-    scored = sorted(
-        [
-            {
-                "filing": f,
-                "score": _score_filing(
-                    f, today, int(f.get("predicate_match_count") or 0)
-                ),
-            }
-            for f in filings
-        ],
-        key=lambda x: x["score"],
-        reverse=True,
-    )[:25]
+    # ── Allocation ────────────────────────────────────────────────────────────
+    # Per-docket path: user has tracked dockets + personalization active.
+    # Flat path: global fallback or market/text/zone-only (no tracked dockets).
+    use_docket_sections = filters_active and bool(bundle.tracked_docket_uuids)
+
+    if use_docket_sections:
+        allocated = allocate_brief(filings, bundle.tracked_docket_uuids, brief_date)
+        # Tag each entry with its render destination before R2 check
+        for e in allocated["top_of_mind"]:
+            e["_dest"] = "top_of_mind"
+        for sec in allocated["docket_sections"]:
+            for e in sec["items"]:
+                e["_dest"] = f"docket:{sec['docket_id']}"
+        all_entries = [
+            *allocated["top_of_mind"],
+            *(e for sec in allocated["docket_sections"] for e in sec["items"]),
+        ]
+    else:
+        scored_flat = sorted(
+            [
+                {
+                    "filing": f,
+                    "score": _score_filing(
+                        f, brief_date, int(f.get("predicate_match_count") or 0)
+                    ),
+                }
+                for f in filings
+            ],
+            key=lambda x: x["score"],
+            reverse=True,
+        )[:BRIEF_ITEM_CAP]
+        tom_flat = [e for e in scored_flat[:TOP_OF_MIND_COUNT] if e["score"] >= 20]
+        wc_flat = [e for e in scored_flat if e not in tom_flat]
+        for e in tom_flat:
+            e["_dest"] = "top_of_mind"
+        for e in wc_flat:
+            e["_dest"] = "what_changed"
+        all_entries = tom_flat + wc_flat
+        allocated = None
 
     # R2 existence check — drop filings whose source objects are missing
-    valid_entries = []
-    for entry in scored:
+    r2_valid_ids: set[str] = set()
+    for entry in all_entries:
         r2_key = entry["filing"].get("r2_key")
         if r2_key and not r2.exists(r2_key):
             logger.warning(
                 "R2 key missing — dropping filing %s", entry["filing"]["filing_id"]
             )
             continue
-        valid_entries.append(entry)
+        r2_valid_ids.add(entry["filing"]["filing_id"])
 
-    if not valid_entries:
+    all_sections_ordered = [e for e in all_entries if e["filing"]["filing_id"] in r2_valid_ids]
+
+    if not all_sections_ordered:
         logger.warning("All items failed R2 check for user %s", user_id)
         return {"user_id": user_id, "status": "skipped", "reason": "all_r2_missing"}
-
-    # Section assignment: top 3 high-scoring → top_of_mind; rest → what_changed
-    top_of_mind = [e for e in valid_entries[:3] if e["score"] >= 20]
-    what_changed = [e for e in valid_entries if e not in top_of_mind]
-    all_sections_ordered = top_of_mind + what_changed
 
     # Build composer inputs
     composer_inputs = [_build_composer_input(e) for e in all_sections_ordered]
@@ -461,23 +627,25 @@ async def handle_compose_brief(payload: dict) -> dict:
 
     composed_by_id = {c["filing_id"]: c for c in composed}
 
-    # Citation validation — drop items whose citation doesn't match the strict regex
+    # Citation validation — route validated items to their destination sections
     sections: dict[str, list[dict]] = {"top_of_mind": [], "what_changed": []}
+    docket_items_out: dict[str, list[dict]] = defaultdict(list)
     valid_filing_ids: list[str] = []
     citation_count = 0
     fallback_items: list[dict] = []
 
-    def _process_entry(entry: dict, section_key: str) -> None:
+    def _process_entry(entry: dict) -> None:
         nonlocal citation_count
         f = entry["filing"]
         fid = f["filing_id"]
-        item = composed_by_id.get(fid)
-        if not item:
+        dest = entry.get("_dest", "what_changed")
+        item_data = composed_by_id.get(fid)
+        if not item_data:
             return
-        citation = item.get("citation", "")
+        citation = item_data.get("citation", "")
+        p = _parse_payload(f.get("extraction_payload"))
         if not _CITATION_RE.search(citation):
             logger.warning("Bad citation for %s: %r — dropping", fid, citation)
-            p = _parse_payload(f.get("extraction_payload"))
             fallback_items.append({
                 "filing_id": fid,
                 "title": f["title"],
@@ -485,49 +653,97 @@ async def handle_compose_brief(payload: dict) -> dict:
                 "citation": _build_citation(p, f),
                 "doc_type": f.get("doc_type", ""),
                 "source_url": f.get("source_url", ""),
+                **_deadline_badge_info(p, brief_date),
             })
             return
-        sections[section_key].append({
+        item_dict = {
             "filing_id": fid,
             "title": f["title"],
-            "summary": item["summary"],
+            "summary": item_data["summary"],
             "citation": citation,
             "doc_type": f.get("doc_type", ""),
             "source_url": f.get("source_url", ""),
-        })
+            **_deadline_badge_info(p, brief_date),
+        }
+        if dest == "top_of_mind":
+            sections["top_of_mind"].append(item_dict)
+        elif dest.startswith("docket:"):
+            docket_items_out[dest[len("docket:"):]].append(item_dict)
+        else:
+            sections["what_changed"].append(item_dict)
         valid_filing_ids.append(fid)
         citation_count += 1
 
-    for entry in top_of_mind:
-        _process_entry(entry, "top_of_mind")
-    for entry in what_changed:
-        _process_entry(entry, "what_changed")
+    for entry in all_sections_ordered:
+        _process_entry(entry)
 
-    item_count = sum(len(v) for v in sections.values())
+    # Build final docket sections list (preserves allocate_brief order)
+    final_docket_sections: list[dict] = []
+    if use_docket_sections and allocated:
+        for sec in allocated["docket_sections"]:
+            items = docket_items_out.get(sec["docket_id"], [])
+            if items:
+                final_docket_sections.append({
+                    "external_id": sec["external_id"] or sec["docket_id"][:8],
+                    "pool_total": sec["pool_total"],
+                    "items": items,
+                })
+
+    item_count = (
+        len(sections["top_of_mind"])
+        + len(sections["what_changed"])
+        + sum(len(s["items"]) for s in final_docket_sections)
+    )
 
     if item_count == 0:
         logger.warning("All citations failed for user %s — sending fallback brief", user_id)
         for fb in fallback_items[:10]:
-            sections["what_changed"].append(fb)
-            valid_filing_ids.append(fb["filing_id"])
-        item_count = len(sections["what_changed"])
+            fid = fb["filing_id"]
+            dest = next(
+                (e.get("_dest", "what_changed") for e in all_sections_ordered
+                 if e["filing"]["filing_id"] == fid),
+                "what_changed",
+            )
+            if dest == "top_of_mind":
+                sections["top_of_mind"].append(fb)
+            elif dest.startswith("docket:") and use_docket_sections and allocated:
+                did = dest[len("docket:"):]
+                # Find or create the section in final_docket_sections
+                sec_match = next((s for s in final_docket_sections if
+                                  s["external_id"] == next(
+                                      (x["external_id"] for x in allocated["docket_sections"]
+                                       if x["docket_id"] == did), None)), None)
+                if sec_match:
+                    sec_match["items"].append(fb)
+                else:
+                    ext = next(
+                        (x["external_id"] or did[:8] for x in allocated["docket_sections"]
+                         if x["docket_id"] == did), did[:8]
+                    )
+                    final_docket_sections.append({"external_id": ext, "pool_total": 1, "items": [fb]})
+            else:
+                sections["what_changed"].append(fb)
+            valid_filing_ids.append(fid)
+        item_count = (
+            len(sections["top_of_mind"])
+            + len(sections["what_changed"])
+            + sum(len(s["items"]) for s in final_docket_sections)
+        )
 
     if item_count == 0:
         return {"user_id": user_id, "status": "skipped", "reason": "no_valid_items"}
 
     # Email subject
-    top_item = sections["top_of_mind"][0] if sections["top_of_mind"] else (
+    first_tom = sections["top_of_mind"][0] if sections["top_of_mind"] else None
+    first_docket_item = (
+        final_docket_sections[0]["items"][0]
+        if final_docket_sections and final_docket_sections[0]["items"]
+        else None
+    )
+    top_item = first_tom or first_docket_item or (
         sections["what_changed"][0] if sections["what_changed"] else None
     )
-    if top_item and item_count > 1:
-        subject = (
-            f"{top_item['title'][:60]} · "
-            f"{item_count - 1} more item{'s' if item_count - 1 != 1 else ''}"
-        )
-    elif top_item:
-        subject = top_item["title"][:80]
-    else:
-        subject = f"NodalPulse · {brief_date.strftime('%b %-d')} · {item_count} items"
+    subject = _build_subject(top_item, item_count, brief_date)
 
     generated_at = datetime.now(UTC)
 
@@ -535,6 +751,7 @@ async def handle_compose_brief(payload: dict) -> dict:
     html = build_brief_html(
         brief_date=brief_date,
         sections=sections,
+        docket_sections=final_docket_sections,
         generated_at=generated_at,
         composer_version=COMPOSER_VERSION,
         app_url=settings.app_url,
@@ -546,6 +763,7 @@ async def handle_compose_brief(payload: dict) -> dict:
     text_content = build_brief_text(
         brief_date=brief_date,
         sections=sections,
+        docket_sections=final_docket_sections,
         app_url=settings.app_url,
         unsubscribe_url=unsubscribe_url,
         composer_version=COMPOSER_VERSION,

@@ -1,6 +1,6 @@
 """HTML and plain-text email template builders for NodalPulse daily briefs."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 _CHICAGO = ZoneInfo("America/Chicago")
@@ -30,6 +30,61 @@ def _esc(s: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
+    )
+
+
+def _deadline_badge(date_str: str | None, brief_date: date, label: str) -> str:
+    """Render a coloured inline badge for an upcoming deadline/effective date.
+
+    Color tiers: ≤1d red, ≤3d orange, ≤7d amber, ≤30d gray. Returns '' if
+    date_str is None, unparseable, past, or more than 30 days away.
+    """
+    if not date_str:
+        return ""
+    try:
+        d = date.fromisoformat(str(date_str)[:10])
+        days = (d - brief_date).days
+        if days < 0 or days > 30:
+            return ""
+        days_label = "today" if days == 0 else f"{days}d"
+        if days <= 1:
+            bg, fg = "#FEE2E2", "#991B1B"
+        elif days <= 3:
+            bg, fg = "#FED7AA", "#9A3412"
+        elif days <= 7:
+            bg, fg = "#FEF3C7", "#92400E"
+        else:
+            bg, fg = "#F3F4F6", "#4B5563"
+        date_label = d.strftime("%b %-d")
+        return (
+            f'<span style="display:inline-block;font-size:11px;font-weight:600;'
+            f'padding:2px 8px;border-radius:3px;background:{bg};color:{fg};'
+            f'margin-bottom:4px;margin-right:4px">'
+            f'{_esc(label)}: {_esc(date_label)} &middot; {_esc(days_label)}'
+            f'</span>'
+        )
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _render_item(item: dict, app_url: str, brief_date: date) -> str:
+    filing_url = item.get("source_url") or f"{app_url}/filing/{item['filing_id']}"
+    dl_badge = _deadline_badge(item.get("nearest_deadline_date"), brief_date, "Deadline")
+    eff_badge = _deadline_badge(item.get("nearest_effective_date"), brief_date, "Effective")
+    badges_html = (
+        f'<div style="margin:4px 0 2px">{dl_badge}{eff_badge}</div>\n'
+        if (dl_badge or eff_badge) else ""
+    )
+    return (
+        f'<div class="item">\n'
+        f'  <div class="item-header">\n'
+        f'    <a href="{filing_url}" class="cta">Open &#x2192;</a>\n'
+        f'    <div class="item-title">{_esc(item["title"])}</div>\n'
+        f'  </div>\n'
+        f'  {badges_html}'
+        f'  <div class="item-summary">{_esc(item["summary"])}</div>\n'
+        f'  <a href="{filing_url}" class="citation">{_esc(item["citation"])}</a>\n'
+        f'</div>\n'
     )
 
 
@@ -142,6 +197,7 @@ def build_brief_html(
     *,
     brief_date: date,
     sections: dict[str, list[dict]],
+    docket_sections: list[dict] = (),
     generated_at: datetime,
     composer_version: str,
     app_url: str,
@@ -155,6 +211,9 @@ def build_brief_html(
     filters_active=False: prepend an "Add filters" banner for users who have
     not yet configured markets, dockets, or saved searches. This is the global-
     fallback path for new or skipped-onboarding users.
+
+    docket_sections: list of {"external_id", "pool_total", "items"} for the
+    per-docket grouping (personalized path). Empty for global/flat path.
     """
     date_str = brief_date.strftime("%A, %B %-d, %Y")
     gen_ct = generated_at.astimezone(_CHICAGO).strftime("%H:%M CT")
@@ -163,34 +222,55 @@ def build_brief_html(
     banner_html = ""
     if not filters_active:
         banner_html = (
-            f'<div style="background:#F5F3FF;border:1px solid #DDD6FE;border-radius:6px;'
-            f'padding:12px 16px;margin:16px 0;font-size:13px;color:#4C1D95;line-height:1.5">'
-            f'<strong>Personalize this brief</strong> &mdash; '
-            f'Add markets, tracked dockets, or keyword searches to focus on filings that '
-            f'matter to you. Today’s brief shows all sources.'
-            f'&nbsp;<a href="{app_url}/settings" '
-            f'style="color:#6366F1;text-decoration:underline">Add filters →</a>'
-            f'</div>\n'
+            "<div style=\"background:#F5F3FF;border:1px solid #DDD6FE;border-radius:6px;"
+            "padding:12px 16px;margin:16px 0;font-size:13px;color:#4C1D95;line-height:1.5\">"
+            "<strong>Personalize this brief</strong> &mdash; "
+            "Add markets, tracked dockets, or keyword searches to focus on filings that "
+            "matter to you. Today&#39;s brief shows all sources."
+            f"&nbsp;<a href=\"{app_url}/settings\" "
+            "style=\"color:#6366F1;text-decoration:underline\">Add filters &rarr;</a>"
+            "</div>\n"
         )
 
     items_html = ""
-    for section_key in ("top_of_mind", "what_changed", "docket_updates"):
-        items = sections.get(section_key, [])
-        if not items:
-            continue
-        label = _esc(_SECTION_LABELS[section_key])
-        items_html += f'<div class="section-title">{label}</div>\n'
-        for item in items:
-            filing_url = item.get("source_url") or f"{app_url}/filing/{item['filing_id']}"
-            items_html += f"""<div class="item">
-  <div class="item-header">
-    <a href="{filing_url}" class="cta">Open &#x2192;</a>
-    <div class="item-title">{_esc(item['title'])}</div>
-  </div>
-  <div class="item-summary">{_esc(item['summary'])}</div>
-  <a href="{filing_url}" class="citation">{_esc(item['citation'])}</a>
-</div>
-"""
+
+    # TOP_OF_MIND section
+    tom_items = sections.get("top_of_mind", [])
+    if tom_items:
+        _lbl_tom = _esc(_SECTION_LABELS["top_of_mind"])
+        items_html += f"<div class=\"section-title\">{_lbl_tom}</div>\n"
+        for item in tom_items:
+            items_html += _render_item(item, app_url, brief_date)
+
+    # Per-docket sections (personalized path)
+    for sec in docket_sections:
+        ext_id = _esc(str(sec["external_id"]))
+        pool_total = sec.get("pool_total", len(sec["items"]))
+        filing_word = "filing" if pool_total == 1 else "filings"
+        sec_ext_id = sec["external_id"]
+        docket_url = f"{app_url}/dockets/{sec_ext_id}?date={brief_date.isoformat()}"
+        items_html += (
+            f"<div class=\"section-title\">"
+            f"DOCKET {ext_id} &mdash; {pool_total} {filing_word} today"
+            f"</div>\n"
+        )
+        for item in sec["items"]:
+            items_html += _render_item(item, app_url, brief_date)
+        items_html += (
+            f"<div style=\"margin:-12px 0 20px\">"
+            f"<a href=\"{docket_url}\" style=\"font-size:12px;font-weight:500;"
+            f"color:#6366F1;text-decoration:none\">"
+            f"View all {pool_total} in dashboard &#x2192;</a>"
+            f"</div>\n"
+        )
+
+    # WHAT_CHANGED section (flat/global path)
+    wc_items = sections.get("what_changed", [])
+    if wc_items:
+        _lbl_wc = _esc(_SECTION_LABELS["what_changed"])
+        items_html += f"<div class=\"section-title\">{_lbl_wc}</div>\n"
+        for item in wc_items:
+            items_html += _render_item(item, app_url, brief_date)
 
     item_word = "item" if item_count == 1 else "items"
 
@@ -312,6 +392,7 @@ def build_brief_text(
     *,
     brief_date: date,
     sections: dict[str, list[dict]],
+    docket_sections: list[dict] = (),
     app_url: str,
     unsubscribe_url: str,
     composer_version: str,
@@ -319,20 +400,31 @@ def build_brief_text(
     date_str = brief_date.strftime("%A, %B %d, %Y")
     lines = [f"NodalPulse — {date_str}", "=" * 52, ""]
 
-    for section_key in ("top_of_mind", "what_changed", "docket_updates"):
-        items = sections.get(section_key, [])
-        if not items:
-            continue
-        label = _SECTION_LABELS[section_key].upper()
-        lines += [f"── {label} ──", ""]
-        for item in items:
-            lines += [
-                item["title"],
-                item["summary"],
-                item["citation"],
-                f"  {app_url}/filing/{item['filing_id']}",
-                "",
-            ]
+    tom_items = sections.get("top_of_mind", [])
+    if tom_items:
+        lines += [f"── {_SECTION_LABELS['top_of_mind'].upper()} ──", ""]
+        for item in tom_items:
+            lines += [item["title"], item["summary"], item["citation"],
+                      f"  {app_url}/filing/{item['filing_id']}", ""]
+
+    for sec in docket_sections:
+        lines += [f"── DOCKET {sec['external_id']} ──", ""]
+        for item in sec["items"]:
+            lines += [item["title"], item["summary"], item["citation"],
+                      f"  {app_url}/filing/{item['filing_id']}", ""]
+        pool_total = sec.get("pool_total", len(sec["items"]))
+        lines += [
+            f"  View all {pool_total} filings: "
+            f"{app_url}/dockets/{sec['external_id']}?date={brief_date.isoformat()}",
+            "",
+        ]
+
+    wc_items = sections.get("what_changed", [])
+    if wc_items:
+        lines += [f"── {_SECTION_LABELS['what_changed'].upper()} ──", ""]
+        for item in wc_items:
+            lines += [item["title"], item["summary"], item["citation"],
+                      f"  {app_url}/filing/{item['filing_id']}", ""]
 
     lines += [
         "-" * 52,

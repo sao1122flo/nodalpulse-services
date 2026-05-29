@@ -193,6 +193,8 @@ async def get_filings_for_brief_user(
             f.r2_key,
             f.source_url,
             f.metadata,
+            f.docket_id::text   AS docket_id,
+            d.external_id       AS docket_external_id,
             e.id::text          AS extraction_id,
             e.payload           AS extraction_payload,
             e.haiku_verdict,
@@ -200,6 +202,7 @@ async def get_filings_for_brief_user(
         FROM filings f
         JOIN extractions e ON e.filing_id = f.id
         JOIN sources s ON s.id = f.source_id
+        LEFT JOIN dockets d ON d.id = f.docket_id
         WHERE f.created_at >= :since
           AND f.created_at < :until
           AND e.haiku_verdict IS DISTINCT FROM 'irrelevant'
