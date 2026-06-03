@@ -181,6 +181,10 @@ def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
         # Skip effective_date type here — handled separately above
         if dl_type == "effective_date":
             continue
+        # Skip estimated deadlines — LLM-extracted dates are not certified as belonging
+        # to this filing; promoting them to +60 urgency would violate scope B.
+        if dl.get("estimated"):
+            continue
         d_str = dl.get("date")
         if d_str:
             try:

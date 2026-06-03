@@ -189,7 +189,13 @@ def _enrich_deadlines(
     """
     deadlines: list[dict] = []
 
-    # Normalise pre-existing deadline entries (may be old {description, date} shape)
+    # Normalise LLM-extracted deadline entries (may be old {description, date} shape).
+    # Force estimated=True regardless of what the LLM claims: a date mentioned in
+    # filing prose can be (a) this filing's deadline, (b) another proceeding's
+    # deadline, or (c) a historical reference. The LLM cannot reliably distinguish
+    # them. Marking estimated=True prevents these from driving the brief's +60
+    # urgency score (scope B: only surface deadlines we are certain of).
+    # Phase 2 will replace these with authoritative dates from the CAISO initiative page.
     for dl in (extracted.get("deadlines") or []):
         if not isinstance(dl, dict):
             continue
@@ -198,7 +204,7 @@ def _enrich_deadlines(
             "description": dl.get("description", ""),
             "date":        dl.get("date"),
             "source":      dl.get("source", "filing"),
-            "estimated":   dl.get("estimated", False),
+            "estimated":   True,   # always — LLM date attribution is not certifiable
             "verify_url":  dl.get("verify_url"),
         })
 
