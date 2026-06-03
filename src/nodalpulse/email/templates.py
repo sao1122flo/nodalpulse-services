@@ -67,13 +67,31 @@ def _deadline_badge(date_str: str | None, brief_date: date, label: str) -> str:
         return ""
 
 
+def _protest_notice_badge(url: str | None) -> str:
+    """Render a static 'Protest deadline — see FERC Notice' link badge.
+
+    Never shows a computed date — scope B hard rule. Renders only when a
+    verify_url is present so the user can navigate to FERC eLibrary directly.
+    """
+    if not url:
+        return ""
+    return (
+        f'<a href="{url}" style="display:inline-block;font-size:11px;font-weight:600;'
+        f'padding:2px 8px;border-radius:3px;background:#EFF6FF;color:#1D4ED8;'
+        f'margin-bottom:4px;margin-right:4px;text-decoration:none">'
+        f'Protest deadline &#x2192; FERC Notice'
+        f'</a>'
+    )
+
+
 def _render_item(item: dict, app_url: str, brief_date: date) -> str:
     filing_url = item.get("source_url") or f"{app_url}/filing/{item['filing_id']}"
     dl_badge = _deadline_badge(item.get("nearest_deadline_date"), brief_date, "Deadline")
     eff_badge = _deadline_badge(item.get("nearest_effective_date"), brief_date, "Effective")
+    protest_badge = _protest_notice_badge(item.get("protest_notice_url"))
     badges_html = (
-        f'<div style="margin:4px 0 2px">{dl_badge}{eff_badge}</div>\n'
-        if (dl_badge or eff_badge) else ""
+        f'<div style="margin:4px 0 2px">{dl_badge}{eff_badge}{protest_badge}</div>\n'
+        if (dl_badge or eff_badge or protest_badge) else ""
     )
     return (
         f'<div class="item">\n'

@@ -149,8 +149,18 @@ def _score_filing(filing: dict, today: date, predicate_match_count: int = 0) -> 
 # ── per-docket allocation ─────────────────────────────────────────────────────
 
 def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
-    """Return nearest upcoming deadline/effective_date within 30 days for badge rendering."""
-    result: dict = {"nearest_deadline_date": None, "nearest_effective_date": None}
+    """Return deadline fields for badge rendering in the brief email.
+
+    Returns:
+      nearest_deadline_date  — nearest date-bearing deadline within 30 days (ISO str or None)
+      nearest_effective_date — proposed effective date within 30 days (ISO str or None)
+      protest_notice_url     — eLibrary verify_url from a protest_notice deadline (str or None)
+    """
+    result: dict = {
+        "nearest_deadline_date":  None,
+        "nearest_effective_date": None,
+        "protest_notice_url":     None,
+    }
     eff = payload.get("effective_date")
     if eff:
         try:
@@ -161,7 +171,17 @@ def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
             pass
     soonest = None
     for dl in payload.get("deadlines") or []:
-        d_str = dl.get("date") if isinstance(dl, dict) else None
+        if not isinstance(dl, dict):
+            continue
+        dl_type = dl.get("type", "other")
+        # Collect the protest notice URL (not date-based)
+        if dl_type == "protest_notice" and dl.get("verify_url"):
+            result["protest_notice_url"] = dl["verify_url"]
+            continue
+        # Skip effective_date type here — handled separately above
+        if dl_type == "effective_date":
+            continue
+        d_str = dl.get("date")
         if d_str:
             try:
                 d = date.fromisoformat(str(d_str)[:10])

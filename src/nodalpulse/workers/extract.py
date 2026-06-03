@@ -5,6 +5,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+from datetime import date, timedelta
 from io import BytesIO
 
 import httpx
@@ -67,7 +68,7 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what CAISO or the filer is requesting from FERC, or null>",
   "outcome": "<if this is a FERC order: the disposition, or null>",
   "effective_date": "<ISO date if mentioned as a proposed or ordered effective date, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "deadlines": [{"type": "stakeholder_comment|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null}],
   "initiative_name": "<CAISO internal initiative or tariff topic name, e.g. 'Storage as a Transmission-Only Asset (SPTO)', 'Resource Adequacy (RA)', or null if not identifiable>",
   "cpuc_proceeding_refs": ["<CPUC proceeding number e.g. A.22-11-017 or R.21-06-017, if the document cross-references a CPUC proceeding>"],
   "role_tags": []
@@ -162,6 +163,97 @@ def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
     return base + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY
 
 
+_FERC_ELIBRARY_SEARCH = "https://elibrary.ferc.gov/eLibrary/search?q={docket}"
+
+# Sources that file exclusively with FERC — protest/comment window applies.
+_FERC_FAMILY_SOURCES = {"caiso", "pjm", "ferc"}
+
+
+def _enrich_deadlines(
+    extracted: dict,
+    doc_type: str,
+    filed_at: str,
+    source_slug: str,
+) -> dict:
+    """Post-process extraction payload to add computed deadlines (scope B).
+
+    Adds deterministic deadline entries AFTER LLM extraction:
+      - rehearing: 30d from order date (FPA §313) when doc_type='ferc-order'
+      - effective_date: wraps the top-level field as a structured deadline entry
+      - protest_notice: non-date entry with eLibrary verify_url for FERC-family filings
+
+    Existing LLM-extracted deadlines are preserved. All entries get type/source/
+    estimated/verify_url fields if missing (normalises old {description, date} shape).
+
+    This function is idempotent: checks for existing type before inserting.
+    """
+    deadlines: list[dict] = []
+
+    # Normalise pre-existing deadline entries (may be old {description, date} shape)
+    for dl in (extracted.get("deadlines") or []):
+        if not isinstance(dl, dict):
+            continue
+        deadlines.append({
+            "type":        dl.get("type", "other"),
+            "description": dl.get("description", ""),
+            "date":        dl.get("date"),
+            "source":      dl.get("source", "filing"),
+            "estimated":   dl.get("estimated", False),
+            "verify_url":  dl.get("verify_url"),
+        })
+
+    existing_types = {d["type"] for d in deadlines}
+
+    # Wrap effective_date into the deadlines array so scoring/rendering is uniform
+    eff = extracted.get("effective_date")
+    if eff and "effective_date" not in existing_types:
+        deadlines.append({
+            "type":        "effective_date",
+            "description": "Proposed effective date",
+            "date":        eff,
+            "source":      "filing",
+            "estimated":   False,
+            "verify_url":  None,
+        })
+
+    # Rehearing — 30 days from FERC order date (FPA §313).
+    # Anchors to the order, not a party filing. Not every FERC order starts this
+    # clock (procedural orders are not final dispositions), but we surface it and
+    # let beta users flag false positives during the reliability window.
+    if doc_type == "ferc-order" and filed_at and "rehearing" not in existing_types:
+        try:
+            order_date = date.fromisoformat(filed_at[:10])
+            rehearing_date = order_date + timedelta(days=30)
+            deadlines.append({
+                "type":        "rehearing",
+                "description": "Rehearing request deadline (FPA §313 — 30 days from order)",
+                "date":        rehearing_date.isoformat(),
+                "source":      "order",
+                "estimated":   False,
+                "verify_url":  None,
+            })
+        except ValueError:
+            logger.warning("_enrich_deadlines: unparseable filed_at %r for rehearing", filed_at)
+
+    # Protest notice — never compute the window; surface the FERC Notice link.
+    # expedited proceedings have shorter windows than any default, so a guessed
+    # estimate fails exactly in the urgent cases (scope B hard rule).
+    if source_slug in _FERC_FAMILY_SOURCES and "protest_notice" not in existing_types:
+        docket = extracted.get("docket_number") or ""
+        verify_url = _FERC_ELIBRARY_SEARCH.format(docket=docket) if docket else None
+        deadlines.append({
+            "type":        "protest_notice",
+            "description": "Protest/comment deadline — window varies by proceeding type; see FERC Notice",
+            "date":        None,
+            "source":      "order",
+            "estimated":   False,
+            "verify_url":  verify_url,
+        })
+
+    extracted["deadlines"] = deadlines
+    return extracted
+
+
 async def handle_extract(payload: dict) -> dict:
     filing_id = payload["filing_id"]
     doc_type = payload.get("doc_type", "puct-filing")
@@ -249,6 +341,9 @@ async def handle_extract(payload: dict) -> dict:
     # CAISO post-extraction: write CPUC proceeding cross-refs into filing_dockets.
     if source_slug == "caiso" and source_id:
         await _write_cpuc_cross_refs(filing_id, source_id, extracted)
+
+    # Deadline engine — compute/inject structured deadline entries (scope B).
+    extracted = _enrich_deadlines(extracted, doc_type, filing.get("filed_at") or "", source_slug)
 
     extraction_id = await insert_extraction(
         filing_id=filing_id,

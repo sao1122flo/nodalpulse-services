@@ -345,7 +345,7 @@ class TestBuildSubject:
 class TestDeadlineBadgeInfo:
     def test_no_dates(self):
         result = _deadline_badge_info({}, BRIEF_DATE)
-        assert result == {"nearest_deadline_date": None, "nearest_effective_date": None}
+        assert result == {"nearest_deadline_date": None, "nearest_effective_date": None, "protest_notice_url": None}
 
     def test_effective_date_within_30d(self):
         payload = {"effective_date": "2026-06-10"}  # 14 days out
