@@ -117,11 +117,13 @@ class CaisoAdapter(MarketAdapter):
         # Anchor to the FERC section by id — not positionally (sections could reorder).
         # Slice the HTML between id="ferc" and id="cpuc" so the parser only sees
         # the FERC table; div.table-responsive within that slice is unambiguously FERC.
-        ferc_start = html.find('id="ferc"')
+        # Use 'id="ferc">' (with closing >) to skip the nav-link that also contains
+        # data-track-id="ferc" — that substring matches 'id="ferc"' but is not the section heading.
+        ferc_start = html.find('id="ferc">')
         if ferc_start == -1:
-            logger.warning("CaisoAdapter: id=\"ferc\" anchor not found — page structure changed?")
+            logger.warning("CaisoAdapter: id=\"ferc\"> anchor not found — page structure changed?")
             return []
-        cpuc_start = html.find('id="cpuc"', ferc_start)
+        cpuc_start = html.find('id="cpuc">', ferc_start)
         ferc_html = html[ferc_start:cpuc_start] if cpuc_start != -1 else html[ferc_start:]
 
         tree = HTMLParser(ferc_html)
