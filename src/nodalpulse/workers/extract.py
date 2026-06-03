@@ -192,13 +192,20 @@ async def handle_extract(payload: dict) -> dict:
         return {"filing_id": filing_id, "skipped": True, "reason": "no_text"}
 
     # Haiku triage — cheap pass before any R2 write or Sonnet call.
-    triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id)
-    try:
-        haiku_verdict = _parse_json(triage_raw).get("verdict", "uncertain")
-    except Exception:
-        haiku_verdict = "uncertain"
-
-    logger.info("Filing %s verdict=%s source=%s", filing_id, haiku_verdict, source_slug)
+    # Skip for electricity-only sources (CAISO, PJM) — every filing from these sources
+    # is electricity-relevant by definition; the Texas-focused triage prompt produces
+    # false negatives on non-Texas markets.
+    _TRIAGE_SKIP_SOURCES = {"caiso", "pjm"}
+    if source_slug in _TRIAGE_SKIP_SOURCES:
+        haiku_verdict = "relevant"
+        logger.info("Filing %s triage skipped (source=%s — electricity-only)", filing_id, source_slug)
+    else:
+        triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id)
+        try:
+            haiku_verdict = _parse_json(triage_raw).get("verdict", "uncertain")
+        except Exception:
+            haiku_verdict = "uncertain"
+        logger.info("Filing %s verdict=%s source=%s", filing_id, haiku_verdict, source_slug)
 
     if haiku_verdict == "irrelevant":
         # Don't materialize R2 — only ~27% of filings pass triage; this is the deferred-R2 saving.
