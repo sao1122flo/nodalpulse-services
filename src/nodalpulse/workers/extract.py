@@ -22,7 +22,7 @@ from nodalpulse.storage import r2
 logger = logging.getLogger(__name__)
 
 SCHEMA_VER = "1.0"
-PROMPT_VER = "1.2"  # CAISO initiative_name + cpuc_proceeding_refs; deferred-R2 post-triage
+PROMPT_VER = "1.3"  # multi-market triage prompt; PJM triage ON (firehose-discovered set)
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -34,13 +34,16 @@ _CONTENT_TYPES: dict[str, str] = {
 }
 
 _TRIAGE_SYSTEM = """\
-You are a document relevance classifier for Texas electricity market regulation.
+You are a document relevance classifier for US electricity market regulation.
 
 Classify the document as:
 - "relevant": directly concerns electricity generation, transmission, distribution,
-  rates, wholesale markets, or Texas grid/ERCOT operations
-- "irrelevant": unrelated to electricity markets (e.g. telecom, water, gas pipelines only)
-- "uncertain": could be relevant but unclear from the text alone
+  rates, wholesale markets, or grid operations in any US jurisdiction, including:
+    ERCOT / PUCT (Texas), CAISO / CPUC (California),
+    PJM and FERC-jurisdictional wholesale electricity proceedings.
+- "irrelevant": unrelated to electricity markets — e.g. telecommunications,
+  water utilities, or natural gas pipelines with no electricity component.
+- "uncertain": electricity relevance is plausible but unclear from the available text.
 
 Respond with JSON only: {"verdict": "relevant"|"irrelevant"|"uncertain", "reason": "<one sentence>"}\
 """
@@ -166,7 +169,7 @@ def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
 _FERC_ELIBRARY_SEARCH = "https://elibrary.ferc.gov/eLibrary/search?q={docket}"
 
 # Sources that file exclusively with FERC — protest/comment window applies.
-_FERC_FAMILY_SOURCES = {"caiso", "pjm", "ferc"}
+_FERC_FAMILY_SOURCES = {"caiso", "pjm", "ferc", "imm"}
 
 
 def _enrich_deadlines(
@@ -290,13 +293,15 @@ async def handle_extract(payload: dict) -> dict:
         return {"filing_id": filing_id, "skipped": True, "reason": "no_text"}
 
     # Haiku triage — cheap pass before any R2 write or Sonnet call.
-    # Skip for electricity-only sources (CAISO, PJM) — every filing from these sources
-    # is electricity-relevant by definition; the Texas-focused triage prompt produces
-    # false negatives on non-Texas markets.
-    _TRIAGE_SKIP_SOURCES = {"caiso", "pjm"}
+    # CAISO and IMM skip triage: both are curated/high-signal corpora where
+    # every filing is electricity-relevant by definition.
+    # - CAISO: operator-curated HTML index; Texas-focused triage prompt produces false negatives.
+    # - IMM: <20 filings/year, 100% FERC electricity (complaints, briefs, SoM reports).
+    # PJM uses a firehose-discovered set — a broader surface that Haiku filters first.
+    _TRIAGE_SKIP_SOURCES = {"caiso", "imm"}
     if source_slug in _TRIAGE_SKIP_SOURCES:
         haiku_verdict = "relevant"
-        logger.info("Filing %s triage skipped (source=%s — electricity-only)", filing_id, source_slug)
+        logger.info("Filing %s triage skipped (source=%s — curated/high-signal)", filing_id, source_slug)
     else:
         triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id)
         try:

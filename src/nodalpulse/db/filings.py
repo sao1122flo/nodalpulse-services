@@ -82,19 +82,34 @@ async def find_or_create_docket(
 
 
 async def get_ferc_docket_set() -> set[str]:
-    """Return docket external_ids with FERC-family jurisdiction for the FERC RSS watch set.
+    """Return docket external_ids for the shared FERC + CAISO-FERC watch set.
 
-    Filters by jurisdiction rather than source slug so dockets created by the CAISO
-    or PJM crawlers (jurisdiction='CAISO-FERC'/'PJM-FERC') are included. Excludes
-    CPUC proceeding dockets (jurisdiction='CPUC') which must never enter the FERC watch set.
+    Scoped to 'FERC' and 'CAISO-FERC' only. PJM-FERC is intentionally excluded:
+    PJM uses handle_crawl_pjm / get_pjm_ferc_docket_set() so that PJM filings are
+    stored exclusively under the 'pjm' source. Including PJM-FERC here would cause
+    the same FERC accession number to be inserted under both 'ferc' and 'pjm' source
+    IDs — a genuine duplicate since both sources pull from the same RSS feed.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
                 SELECT external_id
                 FROM dockets
-                WHERE jurisdiction IN ('FERC', 'CAISO-FERC', 'PJM-FERC')
+                WHERE jurisdiction IN ('FERC', 'CAISO-FERC')
             """),
+        )
+        return {row[0] for row in result.fetchall()}
+
+
+async def get_pjm_ferc_docket_set() -> set[str]:
+    """Return PJM-FERC docket external_ids for the PJM RSS watch set.
+
+    Scoped to jurisdiction='PJM-FERC' only. Used by handle_crawl_pjm to build
+    a PJM-filtered FercAdapter instance without including CAISO or bare-FERC dockets.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT external_id FROM dockets WHERE jurisdiction = 'PJM-FERC'"),
         )
         return {row[0] for row in result.fetchall()}
 

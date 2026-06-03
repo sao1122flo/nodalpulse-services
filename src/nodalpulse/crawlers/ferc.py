@@ -66,6 +66,7 @@ _DOC_TYPE_MAP: dict[str, str] = {
     "report": "ferc-informational",
     "cancellation": "ferc-cancellation",
     "notice": "ferc-notice",
+    "complaint": "ferc-complaint",
     # "order" is last so more-specific keys (e.g. "notice of cancellation") match first.
     # Not every FERC order is a rehearable final disposition — procedural orders don't
     # start the 30-day FPA §313 clock. The deadline engine surfaces "rehearing — 30d
