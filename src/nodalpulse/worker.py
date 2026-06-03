@@ -13,6 +13,7 @@ from nodalpulse.workers.crawl_ferc import handle_crawl_ferc
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_imm import handle_crawl_imm
 from nodalpulse.workers.crawl_pjm_calendar import handle_crawl_pjm_calendar
+from nodalpulse.workers.bootstrap_pjm import handle_bootstrap_pjm
 from nodalpulse.workers.extract import handle_extract
 from nodalpulse.workers.refresh_extraction import handle_refresh_extraction
 
@@ -27,6 +28,7 @@ HANDLERS = {
     "crawl-pjm":             handle_crawl_pjm,
     "crawl-imm":             handle_crawl_imm,
     "crawl-pjm-calendar":   handle_crawl_pjm_calendar,
+    "bootstrap-pjm":        handle_bootstrap_pjm,   # T11-verify only — remove after verify passes
     "extract":               handle_extract,
     "refresh-extraction":    handle_refresh_extraction,
     "compose-brief":         handle_compose_brief,
