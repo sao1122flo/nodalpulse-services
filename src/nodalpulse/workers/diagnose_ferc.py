@@ -5,17 +5,18 @@ import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-# Candidate URLs for FERC tariff/docket filing RSS (not XBRL financial reports)
+# Candidate URLs — focusing on FERC eSubscription per-docket RSS pattern
+# and FERC full-text search API (EFTS)
 _CANDIDATES = [
-    # eFiling API — the new FERC filing submission system
-    ("efilingapi-rss",   "https://efilingapi.ferc.gov/efiling/tariffFilings/rss"),
-    ("efilingapi-list",  "https://efilingapi.ferc.gov/efiling/tariffFilings"),
-    ("efiling-rss",      "https://efiling.ferc.gov/efi/searchDocument.html?format=rss"),
-    # eLibrary search — might expose RSS
-    ("elibrary-rss",     "https://elibrary.ferc.gov/eLibrary/search?format=rss&q=ER26"),
-    ("elibrary-docket",  "https://elibrary.ferc.gov/eLibrary/docketsheet?docket_number=ER26-455&format=rss"),
-    # eSubscription feed
-    ("esub",             "https://elibrary.ferc.gov/eLibrary/search?dType=FILINGS&dateRange=custom&startDate=03%2F01%2F2026&endDate=04%2F01%2F2026&format=rss"),
+    # FERC eSubscription — per-docket RSS (classic pattern)
+    ("esub-docket-rss",  "https://esub.ferc.gov/rss/docketRss.asp?docket_number=ER26-455"),
+    ("esub-root",        "https://esub.ferc.gov/rss/"),
+    ("esub-recent",      "https://esub.ferc.gov/rss/recentFilings.asp"),
+    # FERC full-text search (EFTS) — might have JSON/RSS output
+    ("efts-json",        "https://efts.ferc.gov/EFTS-Java/search.do?q=ER26-455&format=json&rows=5"),
+    ("efts-html",        "https://efts.ferc.gov/EFTS-Java/search.do?q=ER26-455&rows=5"),
+    # FERC eLibrary docket sheet — HTML but parseable
+    ("elibrary-sheet",   "https://elibrary.ferc.gov/eLibrary/docketsheet?docket_number=ER26-455"),
 ]
 
 
