@@ -1,60 +1,52 @@
-"""Temporary diagnostic: fetch FERC RSS from Railway server and report raw contents."""
+"""Temporary diagnostic: probe multiple FERC filing RSS/API URLs from Railway server."""
 import logging
 import httpx
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-_FEED_URL = "https://ecollection.ferc.gov/api/rssfeed"
+# Candidate URLs for FERC tariff/docket filing RSS (not XBRL financial reports)
+_CANDIDATES = [
+    # eFiling API — the new FERC filing submission system
+    ("efilingapi-rss",   "https://efilingapi.ferc.gov/efiling/tariffFilings/rss"),
+    ("efilingapi-list",  "https://efilingapi.ferc.gov/efiling/tariffFilings"),
+    ("efiling-rss",      "https://efiling.ferc.gov/efi/searchDocument.html?format=rss"),
+    # eLibrary search — might expose RSS
+    ("elibrary-rss",     "https://elibrary.ferc.gov/eLibrary/search?format=rss&q=ER26"),
+    ("elibrary-docket",  "https://elibrary.ferc.gov/eLibrary/docketsheet?docket_number=ER26-455&format=rss"),
+    # eSubscription feed
+    ("esub",             "https://elibrary.ferc.gov/eLibrary/search?dType=FILINGS&dateRange=custom&startDate=03%2F01%2F2026&endDate=04%2F01%2F2026&format=rss"),
+]
 
 
 async def handle_diagnose_ferc(payload: dict) -> dict:
-    """Fetch one month of FERC RSS and report what came back, unfiltered."""
-    year  = payload.get("year",  2026)
-    month = payload.get("month", 3)
+    """Probe multiple FERC filing URLs and report what each returns."""
+    results = {}
+    async with httpx.AsyncClient(
+        timeout=20,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 NodalPulse/1.0 regulatory-monitor"},
+    ) as client:
+        for name, url in _CANDIDATES:
+            try:
+                resp = await client.get(url)
+                body = resp.text[:600]
+                # Check if it's XML/RSS and has docket-like content
+                has_er = "ER" in body or "EL" in body or "er2" in body.lower()
+                has_rss = "<rss" in body or "<feed" in body or "<channel" in body
+                results[name] = {
+                    "url":    url,
+                    "status": resp.status_code,
+                    "len":    len(resp.content),
+                    "ct":     resp.headers.get("content-type", "?")[:60],
+                    "is_rss": has_rss,
+                    "has_er_el": has_er,
+                    "preview": body[:300],
+                }
+                logger.info("diagnose_ferc %s: status=%d len=%d rss=%s er=%s",
+                            name, resp.status_code, len(resp.content), has_rss, has_er)
+            except Exception as exc:
+                results[name] = {"url": url, "error": str(exc)[:120]}
+                logger.warning("diagnose_ferc %s: %s", name, exc)
 
-    params = {"month": f"{month:02d}", "year": str(year)}
-    logger.info("diagnose_ferc: fetching %s params=%s", _FEED_URL, params)
-
-    try:
-        async with httpx.AsyncClient(
-            timeout=30,
-            headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
-        ) as client:
-            resp = await client.get(_FEED_URL, params=params)
-            status = resp.status_code
-            body_len = len(resp.content)
-            content_type = resp.headers.get("content-type", "?")
-            body_preview = resp.text[:500]
-
-            logger.info("diagnose_ferc: status=%d  len=%d  ct=%s", status, body_len, content_type)
-    except Exception as exc:
-        logger.error("diagnose_ferc: HTTP error: %s", exc)
-        return {"error": str(exc), "year": year, "month": month}
-
-    # Try to parse RSS
-    try:
-        root = ET.fromstring(resp.text)
-        items = root.findall(".//item")
-        item_count = len(items)
-        # Grab first 5 titles to see if ER dockets appear
-        titles = []
-        for item in items[:5]:
-            t = (item.find("title") or ET.Element("x")).text or ""
-            titles.append(t[:120])
-        logger.info("diagnose_ferc: parsed %d items, first titles: %s", item_count, titles)
-    except ET.ParseError as exc:
-        item_count = -1
-        titles = []
-        logger.warning("diagnose_ferc: XML parse error: %s  body[:200]=%r", exc, body_preview[:200])
-
-    return {
-        "year":         year,
-        "month":        month,
-        "http_status":  status,
-        "body_len":     body_len,
-        "content_type": content_type,
-        "item_count":   item_count,
-        "first_5_titles": titles,
-        "body_preview": body_preview[:300],
-    }
+    return results
