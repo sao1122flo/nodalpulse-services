@@ -82,14 +82,18 @@ async def find_or_create_docket(
 
 
 async def get_ferc_docket_set() -> set[str]:
-    """Return all external_ids tracked in the dockets table for source slug 'ferc'."""
+    """Return docket external_ids with FERC-family jurisdiction for the FERC RSS watch set.
+
+    Filters by jurisdiction rather than source slug so dockets created by the CAISO
+    or PJM crawlers (jurisdiction='CAISO-FERC'/'PJM-FERC') are included. Excludes
+    CPUC proceeding dockets (jurisdiction='CPUC') which must never enter the FERC watch set.
+    """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
-                SELECT d.external_id
-                FROM dockets d
-                JOIN sources s ON s.id = d.source_id
-                WHERE s.slug = 'ferc'
+                SELECT external_id
+                FROM dockets
+                WHERE jurisdiction IN ('FERC', 'CAISO-FERC', 'PJM-FERC')
             """),
         )
         return {row[0] for row in result.fetchall()}
@@ -98,10 +102,13 @@ async def get_ferc_docket_set() -> set[str]:
 async def upsert_filing_dockets(
     filing_id: str,
     docket_ids: list[str],
+    first_is_primary: bool = True,
 ) -> None:
     """Write filing_dockets junction rows for all co-captioned dockets.
 
-    docket_ids[0] is stamped is_primary=True; the rest are False.
+    When first_is_primary=True (default): docket_ids[0] is is_primary=True, rest False.
+    When first_is_primary=False: all rows are is_primary=False (used for secondary
+    cross-refs added at extraction time, e.g. CPUC proceeding refs from CAISO filings).
     Idempotent: ON CONFLICT DO NOTHING (is_primary set on first INSERT).
     """
     if not docket_ids:
@@ -117,7 +124,7 @@ async def upsert_filing_dockets(
                 {
                     "filing_id": filing_id,
                     "docket_id": docket_id,
-                    "is_primary": i == 0,
+                    "is_primary": (i == 0) if first_is_primary else False,
                 },
             )
         await session.commit()

@@ -13,14 +13,36 @@ logger = logging.getLogger(__name__)
 async def get_filing(filing_id: str) -> dict | None:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            text(
-                "SELECT id::text, r2_key, file_ext, doc_type, title "
-                "FROM filings WHERE id = CAST(:id AS uuid)"
-            ),
+            text("""
+                SELECT
+                    f.id::text,
+                    f.r2_key,
+                    f.file_ext,
+                    f.doc_type,
+                    f.title,
+                    f.source_url,
+                    f.external_id,
+                    f.filed_at::text,
+                    f.source_id::text,
+                    s.slug AS source_slug
+                FROM filings f
+                JOIN sources s ON s.id = f.source_id
+                WHERE f.id = CAST(:id AS uuid)
+            """),
             {"id": filing_id},
         )
         row = result.mappings().first()
         return dict(row) if row else None
+
+
+async def update_filing_r2_key(filing_id: str, r2_key: str) -> None:
+    """Persist r2_key for a filing that was materialized at extraction time."""
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text("UPDATE filings SET r2_key = :r2_key WHERE id = CAST(:id AS uuid)"),
+            {"r2_key": r2_key, "id": filing_id},
+        )
+        await session.commit()
 
 
 async def insert_extraction(
