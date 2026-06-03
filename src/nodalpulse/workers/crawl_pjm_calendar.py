@@ -33,12 +33,17 @@ from nodalpulse.db.market_events import upsert_market_event
 
 logger = logging.getLogger(__name__)
 
-# PJM newsroom/stakeholder RSS feed candidates (tried in order; first success wins).
-# PJM may update these URLs; add new candidates here as needed.
+# PJM stakeholder calendar RSS — confirmed live 2026-06-03.
+# Primary: committees-and-groups.aspx?meetings=All&rss=1
+# Returns application/rss+xml with ~27 upcoming committee/meeting items.
+# pubDate = record-published timestamp (NOT the meeting date).
+# Meeting date is in <description> as "Start Date: MM.DD.YYYY".
+# Feed has UTF-8 BOM — must decode with 'utf-8-sig'.
+#
+# Secondary: InsideLines (PJM news blog — market-level announcements, auction results).
 _PJM_RSS_CANDIDATES = [
-    "https://www.pjm.com/-/media/library/events/pjm-stakeholder-meetings.xml",
-    "https://www.pjm.com/rss/stakeholder",
-    "https://www.pjm.com/rss/news",
+    "https://www.pjm.com/committees-and-groups.aspx?meetings=All&rss=1",
+    "https://insidelines.pjm.com/feed/",
 ]
 
 # Keyword → event_type mapping for RSS title classification.
@@ -72,7 +77,26 @@ def _make_slug(source: str, event_date: date, title: str) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:20]
 
 
-def _parse_rss_date(raw: str) -> date | None:
+# Confirmed PJM meetings feed structure (2026-06-03):
+#   <pubDate>   = record-published timestamp, NOT the meeting date
+#   <description> = "...Start Date: MM.DD.YYYY..."
+# Meeting date must be extracted from description, not pubDate.
+_MEETING_DATE_RE = re.compile(r"Start Date:\s*(\d{2})\.(\d{2})\.(\d{4})", re.IGNORECASE)
+
+
+def _extract_meeting_date(description: str) -> date | None:
+    """Extract the actual meeting date from PJM RSS description field."""
+    m = _MEETING_DATE_RE.search(description)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_pub_date(raw: str) -> date | None:
+    """Parse RSS pubDate as a fallback when no Start Date in description."""
     if not raw:
         return None
     try:
@@ -87,20 +111,26 @@ def _parse_rss_date(raw: str) -> date | None:
     return None
 
 
-def _parse_rss_items(xml_text: str) -> list[dict]:
+def _parse_rss_items(xml_bytes: bytes) -> list[dict]:
+    """Parse PJM RSS feed bytes. Strips UTF-8 BOM (present on committees feed)."""
     try:
+        xml_text = xml_bytes.decode("utf-8-sig")
         root = ET.fromstring(xml_text)
-    except ET.ParseError:
+    except (ET.ParseError, UnicodeDecodeError):
         return []
     items = []
     for item in root.findall(".//item"):
         def text(tag: str) -> str:
             el = item.find(tag)
             return (el.text or "").strip() if el is not None else ""
+
+        description = text("description")
+        meeting_date = _extract_meeting_date(description) or _parse_pub_date(text("pubDate"))
+
         items.append({
-            "title":    text("title"),
-            "link":     text("link"),
-            "pub_date": text("pubDate"),
+            "title":        text("title"),
+            "link":         text("link"),
+            "meeting_date": meeting_date,
         })
     return items
 
@@ -111,15 +141,22 @@ async def _try_fetch_rss(client: httpx.AsyncClient, url: str) -> list[dict]:
     if resp.status_code == 404:
         return []
     resp.raise_for_status()
-    return _parse_rss_items(resp.text)
+    return _parse_rss_items(resp.content)
 
 
 async def _ingest_pjm_rss(since_date: date) -> int:
-    """Fetch PJM stakeholder RSS. Returns count of newly inserted events."""
+    """Fetch PJM stakeholder RSS. Returns count of newly inserted events.
+
+    Primary feed: committees-and-groups.aspx?meetings=All&rss=1
+    Contains ~27 upcoming committee/meeting events with actual meeting dates
+    in the description (Start Date: MM.DD.YYYY). estimated=False — these are
+    published by PJM on their official meetings calendar.
+    """
     inserted = 0
     async with httpx.AsyncClient(
         timeout=20,
-        headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 NodalPulse/1.0 regulatory-monitor"},
     ) as client:
         items: list[dict] = []
         for url in _PJM_RSS_CANDIDATES:
@@ -132,15 +169,19 @@ async def _ingest_pjm_rss(since_date: date) -> int:
                 logger.debug("crawl_pjm_calendar: RSS %s unavailable: %s", url, exc)
 
     if not items:
-        logger.info("crawl_pjm_calendar: no PJM RSS available — seeded milestones only")
+        logger.warning("crawl_pjm_calendar: no PJM RSS returned events — check feed URL")
         return 0
 
+    today = date.today()
     for item in items:
         title = item.get("title", "").strip()
         if not title:
             continue
-        event_date = _parse_rss_date(item.get("pub_date", ""))
-        if not event_date or event_date < since_date:
+        event_date = item.get("meeting_date")
+        if not event_date:
+            continue
+        # Include upcoming events (today or later); skip past ones
+        if event_date < today:
             continue
         event_type = _classify_event(title)
         slug = _make_slug("pjm_rss", event_date, title)
