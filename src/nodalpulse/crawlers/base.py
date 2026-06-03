@@ -15,10 +15,21 @@ class RawFiling:
     metadata: dict
 
 
-class BaseCrawler(ABC):
+class MarketAdapter(ABC):
+    """Contract for all market/source crawlers.
+
+    Implementations fetch raw filings from one source and emit normalized
+    RawFiling objects. Everything downstream (R2 upload, DB persist, extraction
+    queue) is shared and source-agnostic via run_adapter().
+    """
+
     source_slug: str
 
     @abstractmethod
     async def fetch_new(self, since: str | None = None) -> list[RawFiling]:
         """Fetch filings not yet seen. since = ISO date string."""
         ...
+
+
+# Backward-compat alias — existing crawler imports continue to work unchanged.
+BaseCrawler = MarketAdapter

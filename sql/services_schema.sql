@@ -27,7 +27,8 @@ INSERT INTO sources (slug, label, base_url) VALUES
   ('ercot-nprr', 'ERCOT Protocol Revision (NPRR/PGRR/MPRR)', 'https://www.ercot.com/mktrules/nprrs'),
   ('ercot-mn',   'ERCOT Market Notices',                      'https://www.ercot.com/services/comm/mkt_notices'),
   ('ferc',       'FERC eTariff / eLibrary',                   'https://elibrary.ferc.gov'),
-  ('tlo',        'Texas Legislature Online',                  'https://capitol.texas.gov')
+  ('tlo',        'Texas Legislature Online',                  'https://capitol.texas.gov'),
+  ('caiso',      'CAISO Regulatory Filings',                  'https://www.caiso.com/legal-regulatory/regulatory-filings-orders/filings')
 ON CONFLICT (slug) DO NOTHING;
 
 -- ─────────────────────────────────────────────

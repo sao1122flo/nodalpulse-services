@@ -59,8 +59,30 @@ class PuctCrawler(BaseCrawler):
     source_slug = "puct"
 
     async def fetch_new(self, since: str | None = None) -> list[RawFiling]:
-        # Kept for interface compliance; handler uses get_rows() + per-file download instead.
-        raise NotImplementedError("Use get_rows() + _download_filing() to avoid OOM")
+        """Two-phase crawl: resolve doc URLs (L1–L3), then download content.
+
+        All PDFs are collected into a list before returning. Acceptable for
+        PUCT's typical batch (~20–60 files/day on Railway's worker memory).
+        If OOM events occur, revisit with an async-generator streaming variant.
+        NOTE: Cloudflare R2 free tier — 1M Class A writes/month; each filing
+        costs one write, so large backfill runs should be rate-limited upstream.
+        """
+        rows = await self.get_rows(since=since)
+        filings: list[RawFiling] = []
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30,
+            verify=False,
+            headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
+        ) as client:
+            for row in rows:
+                try:
+                    filing = await self._download_filing(client, row)
+                    if filing:
+                        filings.append(filing)
+                except Exception:
+                    logger.exception("PUCT: failed to download %s", row.get("external_id", "?"))
+        return filings
 
     async def get_rows(self, since: str | None = None) -> list[dict]:
         """L1+L2+dedup+L3: return rows with doc_url resolved, no content downloaded."""

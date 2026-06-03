@@ -51,31 +51,82 @@ async def get_last_crawled_at(source_slug: str) -> str | None:
         return result.scalar_one_or_none()
 
 
-async def find_or_create_docket(source_id: str, docket_number: str) -> str:
+async def find_or_create_docket(
+    source_id: str,
+    docket_number: str,
+    jurisdiction: str | None = None,
+) -> str:
     """Find or create a dockets row for this source + docket_number.
 
     Returns the docket UUID. Safe under concurrent writes: ON CONFLICT DO UPDATE
-    is used so the RETURNING clause always fires, even on a race.
+    always fires the RETURNING clause.
+
+    jurisdiction: stamped on INSERT; backfills NULL rows on conflict (safe no-op
+    for rows already carrying a jurisdiction value).
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
-                INSERT INTO dockets (source_id, external_id, status)
-                VALUES (CAST(:source_id AS uuid), :external_id, 'open')
-                ON CONFLICT (source_id, external_id) DO UPDATE SET updated_at = NOW()
+                INSERT INTO dockets (source_id, external_id, status, jurisdiction)
+                VALUES (CAST(:source_id AS uuid), :external_id, 'open', :jurisdiction)
+                ON CONFLICT (source_id, external_id) DO UPDATE
+                  SET updated_at  = NOW(),
+                      jurisdiction = COALESCE(dockets.jurisdiction, EXCLUDED.jurisdiction)
                 RETURNING id::text
             """),
-            {"source_id": source_id, "external_id": docket_number},
+            {"source_id": source_id, "external_id": docket_number, "jurisdiction": jurisdiction},
         )
         docket_id = result.scalar_one()
         await session.commit()
         return docket_id
 
 
+async def get_ferc_docket_set() -> set[str]:
+    """Return all external_ids tracked in the dockets table for source slug 'ferc'."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT d.external_id
+                FROM dockets d
+                JOIN sources s ON s.id = d.source_id
+                WHERE s.slug = 'ferc'
+            """),
+        )
+        return {row[0] for row in result.fetchall()}
+
+
+async def upsert_filing_dockets(
+    filing_id: str,
+    docket_ids: list[str],
+) -> None:
+    """Write filing_dockets junction rows for all co-captioned dockets.
+
+    docket_ids[0] is stamped is_primary=True; the rest are False.
+    Idempotent: ON CONFLICT DO NOTHING (is_primary set on first INSERT).
+    """
+    if not docket_ids:
+        return
+    async with AsyncSessionLocal() as session:
+        for i, docket_id in enumerate(docket_ids):
+            await session.execute(
+                text("""
+                    INSERT INTO filing_dockets (filing_id, docket_id, is_primary)
+                    VALUES (CAST(:filing_id AS uuid), CAST(:docket_id AS uuid), :is_primary)
+                    ON CONFLICT (filing_id, docket_id) DO NOTHING
+                """),
+                {
+                    "filing_id": filing_id,
+                    "docket_id": docket_id,
+                    "is_primary": i == 0,
+                },
+            )
+        await session.commit()
+
+
 async def upsert_filing(
     raw: RawFiling,
     source_id: str,
-    r2_key: str,
+    r2_key: str | None,  # None when R2 upload is deferred to extraction time (e.g. FERC adapter)
     docket_id: str | None = None,
 ) -> str | None:
     """Insert filing row. Skips on conflict (same source + external_id). Returns UUID or None.
