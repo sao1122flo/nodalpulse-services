@@ -211,6 +211,45 @@ def _base_styles() -> str:
     """
 
 
+def _render_calendar_events(events: list[dict]) -> str:
+    """Render PJM upcoming deadline rows as an HTML section."""
+    if not events:
+        return ""
+    rows = ""
+    for ev in events:
+        d = ev.get("event_date", "")
+        title = _esc(str(ev.get("title", ""))[:120])
+        source = _esc(str(ev.get("source", "")))
+        estimated = ev.get("estimated", True)
+        est_badge = (
+            " <span style=\"font-size:10px;color:#9CA3AF;font-style:italic\">(est.)</span>"
+            if estimated else ""
+        )
+        url = ev.get("source_url")
+        if url:
+            linked = (
+                f"<a href=\"{_esc(url)}\" style=\"color:#374151;text-decoration:none\">"
+                f"{title}</a>"
+            )
+        else:
+            linked = title
+        rows += (
+            f"<tr>"
+            f"<td style=\"padding:4px 12px 4px 0;white-space:nowrap;color:#6B7280;"
+            f"font-size:12px;font-weight:500\">{_esc(d)}</td>"
+            f"<td style=\"padding:4px 0;font-size:13px;color:#374151\">"
+            f"{linked}{est_badge}</td>"
+            f"<td style=\"padding:4px 0 4px 12px;white-space:nowrap;font-size:11px;"
+            f"color:#9CA3AF\">{source}</td>"
+            f"</tr>\n"
+        )
+    return (
+        "<div class=\"section-title\">PJM UPCOMING &mdash; next 30 days</div>\n"
+        "<table style=\"width:100%;border-collapse:collapse;margin-bottom:24px\">\n"
+        f"<tbody>{rows}</tbody></table>\n"
+    )
+
+
 def build_brief_html(
     *,
     brief_date: date,
@@ -223,6 +262,7 @@ def build_brief_html(
     eval_ok: bool = True,
     item_count: int,
     filters_active: bool = True,
+    calendar_events: list[dict] = (),
 ) -> str:
     """Build the HTML email for a daily brief.
 
@@ -291,6 +331,7 @@ def build_brief_html(
             items_html += _render_item(item, app_url, brief_date)
 
     item_word = "item" if item_count == 1 else "items"
+    calendar_html = _render_calendar_events(list(calendar_events))
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -307,7 +348,7 @@ def build_brief_html(
       <a href="{app_url}" class="logo">Nodal<span class="logo-pulse">Pulse</span></a>
       <div class="header-meta">{_esc(date_str)} &middot; {item_count} {item_word}</div>
     </div>
-    {banner_html}{items_html}
+    {banner_html}{items_html}{calendar_html}
     <div class="footer">
       <a href="{app_url}/dashboard">View in app</a>
       &nbsp;&middot;&nbsp;

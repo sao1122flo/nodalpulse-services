@@ -34,6 +34,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from nodalpulse.db.market_events import get_market_events
 from nodalpulse.db.briefs import (
     check_eval_gate,
     get_filings_for_brief,
@@ -890,6 +891,25 @@ async def handle_compose_brief(payload: dict) -> dict:
 
     generated_at = datetime.now(UTC)
 
+    # Calendar events — upcoming PJM-FERC deadlines for the next 30 days.
+    # Only queried when the brief has PJM content (market_slugs includes 'pjm'
+    # or 'imm', or no market filter is active). Graceful: never blocks the send.
+    pjm_calendar: list[dict] = []
+    try:
+        has_pjm = (
+            not filters_active
+            or not bundle.market_slugs
+            or bool({"pjm", "imm"} & set(bundle.market_slugs))
+        )
+        if has_pjm:
+            pjm_calendar = await get_market_events(
+                jurisdiction="PJM-FERC",
+                from_date=brief_date,
+                until_date=brief_date + timedelta(days=30),
+            )
+    except Exception:
+        logger.warning("compose-brief: market_events query failed — omitting calendar")
+
     # Build HTML + plain text
     html = build_brief_html(
         brief_date=brief_date,
@@ -902,6 +922,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         eval_ok=eval_ok,
         item_count=item_count,
         filters_active=filters_active,
+        calendar_events=pjm_calendar,
     )
     text_content = build_brief_text(
         brief_date=brief_date,
