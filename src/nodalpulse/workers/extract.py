@@ -19,7 +19,7 @@ from nodalpulse.storage import r2
 logger = logging.getLogger(__name__)
 
 SCHEMA_VER = "1.0"
-PROMPT_VER = "1.0"
+PROMPT_VER = "1.1"  # added role_tags field
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -35,6 +35,15 @@ Classify the document as:
 Respond with JSON only: {"verdict": "relevant"|"irrelevant"|"uncertain", "reason": "<one sentence>"}\
 """
 
+_ROLE_TAGS_FIELD = """\
+  "role_tags": ["<role>", ...]
+Role tags: subset of market roles most likely to care about this filing.
+Use only values from: "Regulatory Analyst", "Compliance Officer", "Energy Lawyer",
+"BESS Regulatory Lead", "Trader / Risk Manager", "Consultant / Advisory",
+"Utility / Co-op Staff", "Developer / IPP".
+Empty array means relevant to all roles.\
+"""
+
 _EXTRACT_SYSTEM_PUCT = """\
 You are an expert analyst of Texas electricity regulatory filings at the Public Utility
 Commission of Texas (PUCT).
@@ -48,9 +57,11 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what the filer is asking for, or null>",
   "outcome": "<if this is an order: the ruling, or null>",
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}]
-}\
-"""
+  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "role_tags": []
+}
+
+""" + _ROLE_TAGS_FIELD
 
 _EXTRACT_SYSTEM_ERCOT_NPRR = """\
 You are an expert analyst of ERCOT (Electric Reliability Council of Texas) protocol
@@ -65,9 +76,11 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what protocol change is being proposed, or null>",
   "outcome": "<if this is a final disposition: the ruling or withdrawal status, or null>",
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}]
-}\
-"""
+  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "role_tags": []
+}
+
+""" + _ROLE_TAGS_FIELD
 
 _EXTRACT_SYSTEM_ERCOT_MN = """\
 You are an expert analyst of ERCOT (Electric Reliability Council of Texas) Market Notices,
@@ -82,9 +95,11 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": null,
   "outcome": null,
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}]
-}\
-"""
+  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "role_tags": []
+}
+
+""" + _ROLE_TAGS_FIELD
 
 
 def _extract_system_for_doc_type(doc_type: str) -> str:
