@@ -22,7 +22,7 @@ from nodalpulse.storage import r2
 logger = logging.getLogger(__name__)
 
 SCHEMA_VER = "1.0"
-PROMPT_VER = "1.3"  # multi-market triage prompt; PJM triage ON (firehose-discovered set)
+PROMPT_VER = "1.4"  # PJM extraction prompt (rpm_parameters/rtep/sector_vote); no Texas taxonomy for PJM/IMM
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -55,6 +55,126 @@ Use only values from: "Regulatory Analyst", "Compliance Officer", "Energy Lawyer
 "BESS Regulatory Lead", "Trader / Risk Manager", "Consultant / Advisory",
 "Utility / Co-op Staff", "Developer / IPP".
 Empty array means relevant to all roles.\
+"""
+
+_EXTRACT_SYSTEM_PJM = """\
+You are an expert analyst of PJM Interconnection regulatory filings at FERC (Federal Energy
+Regulatory Commission), including filings by PJM itself, the PJM Independent Market Monitor
+(IMM / Monitoring Analytics), load-serving entities, generators, transmission owners, and
+intervenors across PJM's footprint (PA, NJ, MD, DE, OH, MI, IL, IN, VA, WV, NC, KY, DC).
+
+Extract structured information from the document. Respond with JSON only, no markdown fences:
+{
+  "summary": "<2-3 sentence plain-language summary>",
+  "key_points": ["<point>", ...],
+  "parties": ["<party name>", ...],
+  "docket_number": "<primary FERC docket ID, e.g. ER25-1357, or null>",
+  "relief_requested": "<what the filer is requesting from FERC, or null>",
+  "outcome": "<if this is a FERC order: the disposition, or null>",
+  "effective_date": "<ISO date if mentioned as proposed or ordered effective date, or null>",
+  "deadlines": [{"type": "stakeholder_comment|compliance|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null}],
+  "dollar_impacts": [{"type": "<price_cap|price_floor|clearing_price|cost_allocation|penalty|other>", "unit": "<$/MW-day|$/MWh|$|other>", "value": <number or null>, "description": "<context>"}],
+  "rpm_parameters": {
+    "price_cap_ucap_mwday": <number or null>,
+    "price_floor_ucap_mwday": <number or null>,
+    "clearing_price_ucap_mwday": <number or null>,
+    "delivery_years": ["<e.g. 2026/2027>", ...],
+    "mw_procured": <number or null>,
+    "reserve_margin_pct": <number or null>,
+    "capacity_basis": "<UCAP|ICAP|null>"
+  },
+  "rtep_cost_allocation": [{"zone": "<zone name>", "dollars": <number or null>}],
+  "sector_vote": {
+    "committee": "<MRC|MC|null>",
+    "result": "<approved|rejected|deferred|null>",
+    "transmission_owners": {"support": <int>, "oppose": <int>, "abstain": <int>},
+    "electric_distributors": {"support": <int>, "oppose": <int>, "abstain": <int>},
+    "generation_owners": {"support": <int>, "oppose": <int>, "abstain": <int>},
+    "other_suppliers": {"support": <int>, "oppose": <int>, "abstain": <int>},
+    "end_use_customers": {"support": <int>, "oppose": <int>, "abstain": <int>}
+  },
+  "role_tags": []
+}
+
+rpm_parameters — populate ONLY for RPM / BRA / capacity auction filings. Set null otherwise.
+  - Prices are per UCAP MW-day unless the document explicitly says ICAP. Set capacity_basis
+    accordingly. CRITICAL: UCAP (Unforced Capacity) and ICAP (Installed Capacity) have
+    different numeric values — do not conflate them. When uncertain, set capacity_basis null
+    and note the ambiguity in key_points.
+  - Price caps, floors, and clearing prices typically appear in TABLES or attachments, not
+    in the narrative. Scan all tables before concluding a value is absent.
+  - Few-shot: ER25-1357 (RPM cap/floor) → price_cap_ucap_mwday: 329.17,
+    price_floor_ucap_mwday: 177.24, delivery_years: ["2026/2027","2027/2028"], basis: "UCAP".
+  - EL25-49 (co-located load complaint) → rpm_parameters: null.
+
+rtep_cost_allocation — populate ONLY for RTEP transmission planning or Schedule 12 cost
+allocation filings. Set null otherwise.
+  - Zone-by-zone dollar responsibility (e.g. PSEG, PPL, AEP, Dominion). Values are often
+    in millions of dollars in tables. Return empty array [] if the filing discusses RTEP
+    but provides no zone-level dollar splits.
+
+sector_vote — populate ONLY when a PJM stakeholder committee vote is described.
+  - PJM's five sectors: Transmission Owners, Electric Distributors, Generation Owners,
+    Other Suppliers, End-Use Customers. Approval requires 2/3 supermajority at MRC and MC.
+  - Set null if no vote is described.
+
+role_tags: subset of market roles most likely to care about this filing.
+Use only values from: "Regulatory Analyst", "Compliance Officer", "Energy Lawyer",
+"BESS Regulatory Lead", "Trader / Risk Manager", "Consultant / Advisory",
+"Utility / Co-op Staff", "Developer / IPP".
+Empty array means relevant to all roles.
+
+=== PJM ELECTRICITY REGULATORY REFERENCE ===
+
+PJM MARKET STRUCTURE
+
+PJM Interconnection, L.L.C. is the FERC-regulated Regional Transmission Organization (RTO)
+operating the wholesale electricity market and transmission system serving 13 states and DC:
+Pennsylvania, New Jersey, Maryland, Delaware, Ohio, Michigan, Illinois, Indiana, Virginia,
+West Virginia, North Carolina, Kentucky, and the District of Columbia (~65 million people).
+Unlike ERCOT (Texas), PJM is FERC-jurisdictional: all tariff changes, capacity market rules,
+and transmission cost allocations are filed at and approved by FERC.
+
+CAPACITY MARKET — RPM (Reliability Pricing Model)
+
+The Base Residual Auction (BRA) clears capacity 3 years ahead of the delivery year. The
+Independent Market Monitor (IMM) and FERC scrutinize the Variable Resource Requirement
+(VRR) demand curve, price caps (Capacity Performance CP Net CONE) and floors. Prices are
+expressed in $/MW-day on a UCAP (Unforced Capacity) basis. ICAP (Installed Capacity) is
+sometimes referenced in older documents; they differ by the Equivalent Forced Outage Rate
+(EFORd) deration factor. The 2024/25 BRA cleared at ~$329/MW-day CP, the highest in PJM
+history, primarily driven by data-center load growth in the zone. RPM auction rules are set
+by PJM's Reliability Assurance Agreement (RAA) and Open Access Transmission Tariff (OATT).
+
+TRANSMISSION PLANNING — RTEP (Regional Transmission Expansion Plan)
+
+RTEP is PJM's annual transmission planning process. Cost allocation for transmission projects
+follows Schedule 12 of the OATT. Zone-by-zone cost responsibility is a frequent contested
+issue; the key dockets are ER24-2236 and ER24-2238 (RTEP protocol revisions, 2024).
+
+STAKEHOLDER PROCESS — Manual 34
+
+PJM's stakeholder process is the most formal of any US RTO. Proposals advance through
+subcommittees to the Markets & Reliability Committee (MRC) and Members Committee (MC),
+each requiring a 2/3 supermajority across five weighted voting sectors. Votes are public
+and filed at FERC. Sector positions are evidence of market consensus or controversy.
+
+INDEPENDENT MARKET MONITOR (IMM)
+
+The IMM (Monitoring Analytics, LLC) is the independent market monitor for PJM. It files
+complaints, answers, and annual State of the Market reports at FERC. IMM complaints (§206
+complaints under the Federal Power Act) are high-signal filings that often drive major
+market rule changes. The data-center / co-located load complaint (docket EL26-XX, later
+renumbered) is the marquee active matter as of 2026.
+
+KEY DOCKET TYPES
+
+ER (Rates) dockets: Tariff amendments, compliance filings, RPM parameter changes.
+EL (Electric) dockets: Complaints under FPA §206; capacity market disputes.
+RM (Rulemaking) dockets: FERC-initiated rulemakings affecting PJM markets.
+Protest/comment windows: Set by the FERC Notice (separate document), not the filing itself.
+
+=== END PJM ELECTRICITY REGULATORY REFERENCE ===\
 """
 
 _EXTRACT_SYSTEM_CAISO = """\
@@ -155,6 +275,10 @@ Extract structured information from the document. Respond with JSON only, no mar
 
 
 def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
+    # PJM/IMM: standalone prompt with embedded PJM reference — no Texas taxonomy.
+    # The prompt exceeds 1024 tokens so cache_control: ephemeral engages normally.
+    if source_slug in {"pjm", "imm"}:
+        return _EXTRACT_SYSTEM_PJM
     if source_slug == "caiso":
         base = _EXTRACT_SYSTEM_CAISO
     elif doc_type == "ercot-mn":
