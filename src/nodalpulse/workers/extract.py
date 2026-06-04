@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VER = "1.0"
 TRIAGE_PROMPT_VER = "1.3"  # Haiku triage prompt (relevance classification only)
-PROMPT_VER = "1.4"         # Sonnet extraction prompt (rpm_parameters/rtep/sector_vote)
+PROMPT_VER = "1.5"         # Sonnet extraction prompt (interventions; PUCT/ERCOT deadline type+source)
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -94,6 +94,7 @@ Extract structured information from the document. Respond with JSON only, no mar
     "other_suppliers": {"support": <int>, "oppose": <int>, "abstain": <int>},
     "end_use_customers": {"support": <int>, "oppose": <int>, "abstain": <int>}
   },
+  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest"}],
   "role_tags": []
 }
 
@@ -121,6 +122,11 @@ sector_vote — populate ONLY when a PJM stakeholder committee vote is described
   - PJM's five sectors: Transmission Owners, Electric Distributors, Generation Owners,
     Other Suppliers, End-Use Customers. Approval requires 2/3 supermajority at MRC and MC.
   - Set null if no vote is described.
+
+interventions — populate when the document lists parties that have intervened, protested,
+or commented at FERC on this PJM filing. Distinct from sector_vote (which covers internal
+PJM stakeholder votes). Stance: "support", "oppose", "comments" (neutral), or "protest".
+Return empty array [] if no intervenors are described.
 
 role_tags: subset of market roles most likely to care about this filing.
 Use only values from: "Regulatory Analyst", "Compliance Officer", "Energy Lawyer",
@@ -198,6 +204,7 @@ Extract structured information from the document. Respond with JSON only, no mar
   "deadlines": [{"type": "stakeholder_comment|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null}],
   "initiative_name": "<CAISO internal initiative or tariff topic name, e.g. 'Storage as a Transmission-Only Asset (SPTO)', 'Resource Adequacy (RA)', or null if not identifiable>",
   "cpuc_proceeding_refs": ["<CPUC proceeding number e.g. A.22-11-017 or R.21-06-017, if the document cross-references a CPUC proceeding>"],
+  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest"}],
   "role_tags": []
 }
 
@@ -211,6 +218,10 @@ cpuc_proceeding_refs guidance: CPUC proceeding numbers follow the format Letter.
 Only include refs explicitly cited in the document — do not infer them.
 Return an empty array [] if none are cited.
 
+interventions — populate when the document lists parties that have filed interventions,
+protests, or comments at FERC on this CAISO filing. Stance: "support", "oppose", "comments"
+(neutral), or "protest". Return empty array [] if not described.
+
 Few-shot examples of initiative_name extraction:
 - Title "Errata to Informational Filing of 2-Year Suspension — SPTO Tariff Amendment (ER25-2442)"
   → initiative_name: "Storage as a Transmission-Only Asset (SPTO)"
@@ -222,20 +233,32 @@ Few-shot examples of initiative_name extraction:
 
 _EXTRACT_SYSTEM_PUCT = """\
 You are an expert analyst of Texas electricity regulatory filings at the Public Utility
-Commission of Texas (PUCT).
+Commission of Texas (PUCT), and of general FERC proceedings not covered by a market-specific
+prompt.
 
 Extract structured information from the document. Respond with JSON only, no markdown fences:
 {
   "summary": "<2-3 sentence plain-language summary>",
   "key_points": ["<point>", ...],
   "parties": ["<party name>", ...],
-  "docket_number": "<PUCT control number or null>",
+  "docket_number": "<PUCT control number or FERC docket ID, or null>",
   "relief_requested": "<what the filer is asking for, or null>",
   "outcome": "<if this is an order: the ruling, or null>",
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "deadlines": [{"type": "hearing|compliance|comment_deadline|order_effective|other", "description": "...", "date": "<ISO date or null>", "source": "filing|order"}],
+  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest"}],
   "role_tags": []
 }
+
+deadlines — include only dates that are actionable for this docket: hearing dates, comment
+deadlines, compliance deadlines, or proposed effective dates. Set source="order" when the
+date is set by a PUCT or FERC order; source="filing" when stated in the filing's own text.
+Leave as empty array [] if none are explicitly stated.
+
+interventions — populate when the document lists parties that have filed interventions,
+protests, or comments in the docket. Stance: "support" (supports relief requested), "oppose"
+(opposes or protests), "comments" (neutral comments without clear position), "protest"
+(formal protest). Leave as empty array [] if not described.
 
 """ + _ROLE_TAGS_FIELD
 
@@ -252,9 +275,14 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what protocol change is being proposed, or null>",
   "outcome": "<if this is a final disposition: the ruling or withdrawal status, or null>",
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "deadlines": [{"type": "balloting|hearing|comment_deadline|implementation|other", "description": "...", "date": "<ISO date or null>", "source": "filing|notice"}],
   "role_tags": []
 }
+
+deadlines — include only explicitly stated actionable dates: balloting windows, TAC/Board
+hearing dates, comment deadlines, or implementation dates. source="notice" when set by an
+ERCOT market notice; source="filing" when stated in the revision document itself.
+Leave as empty array [] if none are explicitly stated.
 
 """ + _ROLE_TAGS_FIELD
 
@@ -271,18 +299,27 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": null,
   "outcome": null,
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"description": "...", "date": "<ISO date or null>"}],
+  "deadlines": [{"type": "implementation|outage|comment_deadline|other", "description": "...", "date": "<ISO date or null>", "source": "notice"}],
   "role_tags": []
 }
+
+deadlines — include only explicitly stated actionable dates in this notice (implementation
+dates, outage windows, response deadlines). source is always "notice" for market notices.
+Leave as empty array [] if none are explicitly stated.
 
 """ + _ROLE_TAGS_FIELD
 
 
 def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
     # PJM/IMM: standalone prompt with embedded PJM reference — no Texas taxonomy.
-    # The prompt exceeds 1024 tokens so cache_control: ephemeral engages normally.
     if source_slug in {"pjm", "imm"}:
         return _EXTRACT_SYSTEM_PJM
+    # FERC-generic (source_slug="ferc"): FERC-aware schema (CAISO prompt), no Texas taxonomy.
+    # FERC filings are FERC-jurisdictional, not Texas — PUCT framing (the else branch) was wrong.
+    # CAISO-specific fields (initiative_name, cpuc_proceeding_refs) will be null for non-CAISO
+    # FERC filings, which is acceptable. Mirrors the PJM early-return pattern.
+    if source_slug == "ferc":
+        return _EXTRACT_SYSTEM_CAISO
     if source_slug == "caiso":
         base = _EXTRACT_SYSTEM_CAISO
     elif doc_type == "ercot-mn":
