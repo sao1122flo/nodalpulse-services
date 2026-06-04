@@ -23,13 +23,20 @@ async def main():
             if "error" in data:
                 print(f"\n  [{probe}] ERROR: {data['error']}")
                 continue
-            filings = data.get("filings", [])
-            print(f"\n  [{probe}] totalHits={data.get('totalHits')}  returned={len(filings)}")
-            for f in filings:
-                print(f"    {f.get('acc')}  {f.get('filed')}  filer={f.get('filer')}")
-                print(f"      doc_type={f.get('doc_type', f.get('doc_type_raw'))}  dockets={f.get('dockets')}")
-                print(f"      file_id={f.get('file_id')}")
-                print(f"      desc: {f.get('desc','')[:100]}")
+            print(f"\n  [{probe}] totalHits={data.get('totalHits')}  all={data.get('all_count')}  pjm={data.get('pjm_count')}  tariff={data.get('tariff_count')}")
+            for section in ("pjm_filings", "tariff_filings", "all_last_10", "filings"):
+                items = data.get(section, [])
+                if not items:
+                    continue
+                print(f"  -- {section} ({len(items)}) --")
+                for f in items:
+                    print(f"    {f.get('acc')}  {f.get('filed')}  filer={f.get('filer')}")
+                    print(f"      doc_type={f.get('doc_type', f.get('doc_type_raw'))}  dockets={f.get('dockets')}")
+                    for t in f.get("transmittals", []):
+                        print(f"      transmittal: {t.get('fileDesc')}  fileId={t.get('fileId')}")
+                    if "file_id" in f:
+                        print(f"      file_id={f.get('file_id')}")
+                    print(f"      desc: {f.get('desc','')[:100]}")
     await conn.close()
 
 asyncio.run(main())

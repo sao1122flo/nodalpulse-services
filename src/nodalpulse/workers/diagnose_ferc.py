@@ -1,4 +1,4 @@
-"""Probe: find PJM Schedule 12-Appendix A RTEP cost allocation docket (2026)."""
+"""Probe: get ALL ER24-843 filings (50, DESC) to find PJM RTEP tariff filing."""
 import json
 import logging
 import httpx
@@ -34,12 +34,71 @@ def _search_body(text, docket=None, affil=None, start=None, end=None, page=1):
 
 
 async def handle_diagnose_ferc(payload: dict) -> dict:
-    """Search for PJM Schedule 12-Appendix A RTEP cost allocation filings."""
+    """Fetch all 50 ER24-843 filings, return PJM-authored ones with transmittal details."""
     out = {}
 
     async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers=_HEADERS) as client:
 
-        # Probe 1: ER24-843 (known RTEP PJM docket — backup)
+        # Fetch all 50 ER24-843 filings in one page (DESC = most recent first)
+        body = {
+            "searchText": "*", "searchFullText": True, "searchDescription": True,
+            "docketSearches": [{"docketNumber": "ER24-843", "subDocketNumbers": []}],
+            "dateSearches": [], "affiliations": [], "categories": [],
+            "libraries": ["Electric"], "classTypes": [], "accessionNumber": None,
+            "eFiling": False, "resultsPerPage": 50, "curPage": 1,
+            "groupBy": "NONE", "sortBy": "", "allDates": True,
+        }
+        try:
+            r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
+            d = r.json()
+            hits = d.get("searchHits") or []
+
+            all_filings = []
+            for h in hits:
+                filer = next(
+                    (a.get("affiliation") for a in h.get("affiliations", [])
+                     if a.get("afType", "").upper() == "AUTHOR"),
+                    None,
+                )
+                transmittals = [
+                    {"fileId": t.get("fileId"), "fileDesc": t.get("fileDesc"), "fileName": t.get("fileName")}
+                    for t in (h.get("transmittals") or [])
+                ]
+                all_filings.append({
+                    "acc": h.get("acesssionNumber"),
+                    "filed": h.get("filedDate"),
+                    "filer": filer,
+                    "doc_type": [ct.get("documentType") for ct in h.get("classTypes", [])],
+                    "desc": h.get("description", "")[:120],
+                    "transmittals": transmittals,
+                    "dockets": h.get("docketNumbers", [])[:3],
+                })
+
+            pjm_filings = [f for f in all_filings if "PJM" in (f.get("filer") or "")]
+            tariff_filings = [f for f in all_filings
+                              if any("Tariff" in dt for dt in f.get("doc_type", []))]
+
+            out["er24_843_all"] = {
+                "totalHits": d.get("totalHits"),
+                "all_count": len(all_filings),
+                "pjm_count": len(pjm_filings),
+                "tariff_count": len(tariff_filings),
+                "pjm_filings": pjm_filings,
+                "tariff_filings": tariff_filings,
+                "all_last_10": all_filings[-10:],  # oldest 10 (most likely original PJM filings)
+            }
+            logger.info("er24_843_all: totalHits=%s all=%d pjm=%d tariff=%d",
+                        d.get("totalHits"), len(all_filings), len(pjm_filings), len(tariff_filings))
+        except Exception as exc:
+            out["er24_843_all"] = {"error": str(exc)[:300]}
+
+        # DEAD PROBES REMOVED — Schedule 12 text search returned 0 (FERC API limitation)
+        # Keeping only the ER24-843 full list probe.
+
+        # ── old probes removed ────────────────────────────────────────────────────
+
+        if False:  # placeholder to satisfy original structure
+            # Probe 1: ER24-843 (known RTEP PJM docket — backup)
         try:
             r = await client.post(f"{_BASE}/Search/AdvancedSearch",
                                   content=json.dumps(_search_body("*", docket="ER24-843")))
