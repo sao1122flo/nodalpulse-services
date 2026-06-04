@@ -8,16 +8,21 @@ not tariff filings — zero useful hits since the adapter was built).
 
 PDF strategy by filer:
 - PJM own filings (AUTHOR affiliation == "PJM Interconnection, L.L.C.") →
-  source_url = pjm.com/-/media/DotCom/documents/ferc/filings/{year}/{YYYYMMDD}-{docket}-000.pdf
+  source_url = pjm.com/-/media/DotCom/documents/ferc/filings/{year}/{transmittals[0].fileName}
+  (transmittals[].fileName is the authoritative filename PJM uploads to FERC — e.g.
+  "20260309-el25-49-000.pdf" or "20260309-el25-49-000 et al..pdf". Never guess.)
 - All others → source_url = ""; metadata["ferc_file_id"] carries transmittals[0].fileId
   for DownloadFile+session fetch at extraction time (gating issue tracked in #64).
 
 Design decisions:
-- Multi-docket: docketNumbers[] list → all captured in metadata["docket_numbers"]
+- Multi-docket: docketNumbers[] list deduped after normalization → metadata["docket_numbers"]
 - Dedup key: acesssionNumber (FERC API typo, field name preserved) → external_id, YYYYMMDD-NNNN
 - Filed cursor: filedDate (MM/DD/YYYY) — not postedDate or issuedDate
+- Default sort is filedDate DESC (most recent first); early-stop when page tail < since_date
+- FERC dateSearches filter is broken (always 0 with allDates=False); fetch allDates=True
+  and apply since_date cutoff in Python via early-stop + _item_to_filing() filter
 - Sequential per-docket queries; no parallel calls to FERC servers
-- Discovery pump removed — broken affiliations filter (service-list match, not author);
+- Discovery pump removed — affiliations filter matches service lists, not filer-only;
   new PJM dockets are seeded manually, consistent with all other jurisdictions
 """
 
@@ -112,10 +117,7 @@ class FercAdapter(MarketAdapter):
 
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
             for docket in sorted(self._watched):
-                # Note: FERC dateSearches filter is non-functional (always returns 0 with
-                # allDates=False). Fetch all pages with allDates=True; filter by filedDate
-                # in Python. _item_to_filing() enforces the since_date cutoff.
-                items = await _fetch_docket(client, docket)
+                items = await _fetch_docket(client, docket, since_date)
                 for item in items:
                     filing = _item_to_filing(item, since_date)
                     if filing and filing.external_id not in seen_ids:
@@ -129,15 +131,21 @@ class FercAdapter(MarketAdapter):
 # ── eLibrarywebapi fetch ──────────────────────────────────────────────────────
 
 
-_MAX_PAGES_PER_DOCKET = 10  # cap at 500 items per docket per run (safety valve)
+_MAX_PAGES_PER_DOCKET = 10  # hard cap; safety valve for very large dockets
 
 
-async def _fetch_docket(client: httpx.AsyncClient, docket: str) -> list[dict]:
-    """Fetch all filings for one docket via AdvancedSearch (allDates=True), paginated.
+async def _fetch_docket(
+    client: httpx.AsyncClient,
+    docket: str,
+    since_date: date,
+) -> list[dict]:
+    """Fetch recent filings for one docket via AdvancedSearch (allDates=True), paginated.
 
-    FERC's dateSearches filter is non-functional (always returns totalHits=0 when
-    allDates=False). Workaround: fetch the full catalog with allDates=True and apply
-    the since_date cutoff in Python inside _item_to_filing().
+    FERC dateSearches is broken (always returns 0 with allDates=False). Workaround:
+    fetch with allDates=True. Default sort is filedDate DESC (most recent first —
+    confirmed by probe). Early-stop: when the last item in a page is older than
+    since_date, all subsequent pages are also older; stop without fetching them.
+    _item_to_filing() applies the since_date cutoff as a second gate.
     """
     items: list[dict] = []
     page = 1
@@ -158,11 +166,10 @@ async def _fetch_docket(client: httpx.AsyncClient, docket: str) -> list[dict]:
             "resultsPerPage": _RESULTS_PER_PAGE,
             "curPage": page,
             "groupBy": "NONE",
-            "sortBy": "",
+            "sortBy": "",   # default = filedDate DESC
             "allDates": True,
         }
 
-        logger.debug("FercAdapter: AdvancedSearch docket=%s page=%d", docket, page)
         resp = await client.post(_SEARCH_URL, content=json.dumps(body))
         resp.raise_for_status()
         data = resp.json()
@@ -175,11 +182,19 @@ async def _fetch_docket(client: httpx.AsyncClient, docket: str) -> list[dict]:
 
         if len(batch) < _RESULTS_PER_PAGE or len(items) >= total:
             break
+
+        # Early-stop: items are sorted filedDate DESC; if tail of this page is older
+        # than since_date, all remaining pages are also older — no need to fetch them.
+        last_filed = _parse_filed_date(batch[-1].get("filedDate", "")) if batch else None
+        if last_filed and last_filed < since_date:
+            logger.info("FercAdapter: docket=%s early-stop at page=%d (tail=%s < since=%s)",
+                        docket, page, last_filed, since_date)
+            break
+
         page += 1
 
     if page > _MAX_PAGES_PER_DOCKET:
-        logger.warning("FercAdapter: docket=%s hit page cap (%d pages), may have missed older items",
-                       docket, _MAX_PAGES_PER_DOCKET)
+        logger.warning("FercAdapter: docket=%s hit page cap (%d)", docket, _MAX_PAGES_PER_DOCKET)
 
     return items
 
@@ -198,17 +213,24 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
     if not filed or filed < since_date:
         return None
 
-    docket_numbers = [_normalize_docket(d) for d in item.get("docketNumbers", [])]
+    # Normalize and deduplicate: API returns sub-docket suffixes (EL25-49-000, EL25-49-001)
+    # which normalize to the same base docket; preserve first-occurrence order.
+    _seen: dict[str, None] = {}
+    docket_numbers = [
+        _seen.setdefault(nd, nd)
+        for raw in item.get("docketNumbers", [])
+        if (nd := _normalize_docket(raw)) not in _seen
+    ]
+
     description = item.get("description", "")
     filer = _get_author(item)
     is_pjm = filer == _PJM_FILER
-
-    # PDF source URL: PJM.com slug for PJM filings; empty for FERC orders (deferred)
-    source_url = _pjm_pdf_url(item, docket_numbers) if is_pjm else ""
-
-    # For non-PJM: store first transmittal's fileId for extraction-time DownloadFile+session
     transmittals = item.get("transmittals", [])
     ferc_file_id = transmittals[0].get("fileId", "") if transmittals else ""
+
+    # PDF source URL: PJM.com via authoritative transmittals[0].fileName
+    # (never guess the slug — two PJM docs on same day/docket have different names)
+    source_url = _pjm_pdf_url(item) if is_pjm else ""
 
     return RawFiling(
         source_slug="ferc",
@@ -225,6 +247,7 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
             "description": description,
             "filer": filer,
             "ferc_file_id": ferc_file_id,
+            "ferc_file_name": transmittals[0].get("fileName", "") if transmittals else "",
             "ferc_accession": acc,
             "is_pjm_filing": is_pjm,
         },
@@ -254,19 +277,27 @@ def _get_author(item: dict) -> str | None:
     return None
 
 
-def _pjm_pdf_url(item: dict, docket_numbers: list[str]) -> str:
+def _pjm_pdf_url(item: dict) -> str:
     """Construct the PJM.com PDF URL for a PJM-authored FERC filing.
 
-    Pattern: pjm.com/-/media/DotCom/documents/ferc/filings/{year}/{YYYYMMDD}-{docket}-000.pdf
-    where YYYYMMDD is the filed date and {docket} is the primary captioned docket.
+    Uses transmittals[0].fileName as the authoritative filename — the exact name
+    PJM uploads to FERC (e.g. "20260309-el25-49-000.pdf" or
+    "20260309-el25-49-000 et al..pdf"). Never guess: two PJM docs filed same-day
+    in the same docket can have different names; the guessed "-000" suffix would
+    collapse them to one URL.
     """
     filed = _parse_filed_date(item.get("filedDate", ""))
-    if not filed or not docket_numbers:
+    if not filed:
         return ""
-    primary = docket_numbers[0]
+    transmittals = item.get("transmittals", [])
+    if not transmittals:
+        return ""
+    file_name = transmittals[0].get("fileName", "")
+    if not file_name:
+        return ""
     return (
         f"https://www.pjm.com/-/media/DotCom/documents/ferc/filings"
-        f"/{filed.year}/{filed.strftime('%Y%m%d')}-{primary}-000.pdf"
+        f"/{filed.year}/{file_name}"
     )
 
 
