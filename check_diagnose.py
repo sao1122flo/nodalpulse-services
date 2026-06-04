@@ -24,22 +24,25 @@ async def main():
             if data.get("error"):
                 print(f"    ERROR: {data['error']}")
                 continue
-            # PDF probe
+            if probe == "full_transmittals":
+                print(f"    status={data.get('status')}  acc={data.get('acesssionNumber')}  n_transmittals={data.get('transmittals_count')}")
+                for t in data.get("transmittals", []):
+                    print(f"    transmittal: {json.dumps(t)}")
+                continue
             if "is_pdf" in data:
                 print(f"    status={data.get('status')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('ct')}")
                 if data.get("preview"):
                     print(f"    preview: {data['preview'][:150]}")
                 continue
-            # Search probe
             if "totalHits" in data:
-                print(f"    status={data.get('status')}  totalHits={data.get('totalHits')}  items_count={data.get('items_count')}")
-                affils = data.get("first_3_affils", [])
-                dockets = data.get("first_3_dockets", [])
-                descs = data.get("first_3_desc", [])
-                for i in range(len(descs)):
-                    print(f"    [{i}] affils={affils[i] if i < len(affils) else '?'}")
-                    print(f"         dockets={dockets[i] if i < len(dockets) else '?'}")
-                    print(f"         desc: {descs[i][:100]}")
+                print(f"    status={data.get('status')}  totalHits={data.get('totalHits')}  numHits={data.get('numHits')}  items={data.get('items_count')}")
+                for item in data.get("first_3", []):
+                    print(f"    acc={item.get('acc')}  filed={item.get('filed')}")
+                    print(f"      dockets={item.get('dockets')}  affils={item.get('affils')}")
+                    print(f"      desc: {item.get('desc','')[:100]}")
+                continue
+            if "fileName" in data:
+                print(f"    fileName={data.get('fileName')}  is_url={data.get('is_url')}")
                 continue
             print(f"    {json.dumps(data)[:300]}")
     await conn.close()
