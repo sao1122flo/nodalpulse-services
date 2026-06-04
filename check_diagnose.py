@@ -21,31 +21,22 @@ async def main():
             if not isinstance(data, dict):
                 continue
             print(f"\n  [{probe}]")
-            err = data.get("error")
-            if err:
-                print(f"    ERROR: {err}")
-                continue
-            if data.get("parse_error"):
-                print(f"    PARSE_ERROR: {data['parse_error']}")
-                print(f"    preview: {data.get('preview','')[:200]}")
+            if data.get("error"):
+                print(f"    ERROR: {data['error']}")
                 continue
             if data.get("skipped"):
-                print(f"    SKIPPED: {data['skipped']}")
-                print(f"    probe1_item_keys: {data.get('probe1_item_keys')}")
+                print(f"    SKIPPED  p1_keys={data.get('p1_keys')}")
                 continue
-            print(f"    status={data.get('status','?')}  totalHits={data.get('total_hits_raw','?')}  items_key={data.get('items_key_found')}  items_count={data.get('items_count')}")
-            print(f"    top_keys: {data.get('top_keys')}")
-            print(f"    first_item_keys: {data.get('first_item_keys')}")
+            print(f"    status={data.get('status','?')}  top_keys={data.get('top_keys')}  items_key={data.get('items_key')}  items_count={data.get('items_count')}")
+            if data.get("first_item_keys"):
+                print(f"    first_item_keys: {data['first_item_keys']}")
             item = data.get("first_item", {})
-            if item:
-                for k, v in item.items():
-                    print(f"      {k}: {str(v)[:120]}")
-            small = data.get("full_json_if_small")
-            if small and small != "<too large>" and not item:
-                print(f"    full_json: {json.dumps(small)[:800]}")
-            # PDF probe
+            for k, v in item.items():
+                print(f"      {k}: {str(v)[:120]}")
+            if data.get("raw_preview"):
+                print(f"    raw_preview: {data['raw_preview'][:600]}")
             if "is_pdf" in data:
-                print(f"    accession={data.get('accession_used')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('content_type')}")
+                print(f"    acc={data.get('acc')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('ct')}")
     await conn.close()
 
 asyncio.run(main())
