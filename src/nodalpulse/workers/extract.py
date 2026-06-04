@@ -410,7 +410,14 @@ async def handle_extract(payload: dict) -> dict:
     if r2_key:
         content = r2.download(r2_key)
     elif source_url:
-        content = await _fetch_source_url(source_url)
+        try:
+            content = await _fetch_source_url(source_url)
+        except Exception as exc:
+            if ferc_file_id:
+                logger.warning("Filing %s: source_url fetch failed (%s), falling back to DownloadP8File", filing_id, exc)
+                content = await _fetch_ferc_p8file(ferc_file_id)
+            else:
+                raise
     elif ferc_file_id:
         logger.info("Filing %s: fetching PDF via FERC DownloadP8File fileId=%s", filing_id, ferc_file_id)
         content = await _fetch_ferc_p8file(ferc_file_id)
