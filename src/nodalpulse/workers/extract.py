@@ -22,7 +22,8 @@ from nodalpulse.storage import r2
 logger = logging.getLogger(__name__)
 
 SCHEMA_VER = "1.0"
-PROMPT_VER = "1.4"  # PJM extraction prompt (rpm_parameters/rtep/sector_vote); no Texas taxonomy for PJM/IMM
+TRIAGE_PROMPT_VER = "1.3"  # Haiku triage prompt (relevance classification only)
+PROMPT_VER = "1.4"         # Sonnet extraction prompt (rpm_parameters/rtep/sector_vote)
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -112,6 +113,9 @@ allocation filings. Set null otherwise.
   - Zone-by-zone dollar responsibility (e.g. PSEG, PPL, AEP, Dominion). Values are often
     in millions of dollars in tables. Return empty array [] if the filing discusses RTEP
     but provides no zone-level dollar splits.
+  - If a === STRUCTURED TABLES === section appears in the user message, prefer it over
+    narrative text for zone↔dollar mapping — it preserves column alignment that raw text
+    extraction loses on wide landscape tables.
 
 sector_vote — populate ONLY when a PJM stakeholder committee vote is described.
   - PJM's five sectors: Transmission Owners, Electric Distributors, Generation Owners,
@@ -416,13 +420,19 @@ async def handle_extract(payload: dict) -> dict:
             if ferc_file_id:
                 logger.warning("Filing %s: source_url fetch failed (%s), falling back to DownloadP8File", filing_id, exc)
                 content = await _fetch_ferc_p8file(ferc_file_id)
+                if content == _RESTRICTED_SENTINEL:
+                    logger.warning("Filing %s: access-restricted (CEII/privileged or exhausted 401) — metadata-only", filing_id)
+                    return {"filing_id": filing_id, "skipped": True, "reason": "access-restricted"}
             else:
                 raise
     elif ferc_file_id:
         logger.info("Filing %s: fetching PDF via FERC DownloadP8File fileId=%s", filing_id, ferc_file_id)
         content = await _fetch_ferc_p8file(ferc_file_id)
+        if content == _RESTRICTED_SENTINEL:
+            logger.warning("Filing %s: access-restricted (CEII/privileged or exhausted 401) — metadata-only", filing_id)
+            return {"filing_id": filing_id, "skipped": True, "reason": "access-restricted"}
         if not content:
-            logger.warning("Filing %s: DownloadP8File returned empty (auth error or non-PDF) — skipping", filing_id)
+            logger.warning("Filing %s: DownloadP8File returned empty (unrecognized format) — skipping", filing_id)
             return {"filing_id": filing_id, "skipped": True, "reason": "ferc_p8file_unavailable"}
     else:
         logger.warning("Filing %s has no r2_key, no source_url, no ferc_file_id — skipping", filing_id)
@@ -430,8 +440,9 @@ async def handle_extract(payload: dict) -> dict:
 
     text = _extract_text(content, file_ext)
     if not text.strip():
-        logger.warning("No text extracted from %s", filing_id)
-        return {"filing_id": filing_id, "skipped": True, "reason": "no_text"}
+        reason = "scanned-not-extracted" if _is_scanned_pdf(content) else "no_text"
+        logger.warning("No text extracted from %s (reason=%s)", filing_id, reason)
+        return {"filing_id": filing_id, "skipped": True, "reason": reason}
 
     # Haiku triage — cheap pass before any R2 write or Sonnet call.
     # CAISO and IMM skip triage: both are curated/high-signal corpora where
@@ -444,7 +455,7 @@ async def handle_extract(payload: dict) -> dict:
         haiku_verdict = "relevant"
         logger.info("Filing %s triage skipped (source=%s — curated/high-signal)", filing_id, source_slug)
     else:
-        triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id)
+        triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id, prompt_version=TRIAGE_PROMPT_VER)
         try:
             haiku_verdict = _parse_json(triage_raw).get("verdict", "uncertain")
         except Exception:
@@ -479,10 +490,21 @@ async def handle_extract(payload: dict) -> dict:
         logger.info("Materialized R2 for %s → %s", filing_id, r2_key)
 
     # Sonnet extraction — system block is cached; user message (filing text) is not.
+    # For PJM tariff amendments, supplement with structured table extraction: wide
+    # landscape tables (RTEP cost-allocation) lose column alignment under extract_text()
+    # but extract_tables() preserves cell boundaries. Injected after the narrative text.
+    user_msg = f"Document type: {doc_type}\n\n{text[:40_000]}"
+    if source_slug in {"pjm", "imm"} and doc_type == "ferc-tariff-amendment":
+        table_md = _extract_tables_as_markdown(content)
+        if table_md:
+            user_msg += f"\n\n=== STRUCTURED TABLES ===\n{table_md}"
+            logger.info("Filing %s: injecting %d chars of structured tables", filing_id, len(table_md))
+
     extract_raw = await llm_extract(
         _extract_system_for_doc_type(doc_type, source_slug),
-        f"Document type: {doc_type}\n\n{text[:40_000]}",
+        user_msg,
         filing_id=filing_id,
+        prompt_version=PROMPT_VER,
     )
     try:
         extracted = _parse_json(extract_raw)
@@ -533,35 +555,55 @@ _FERC_BROWSER_HEADERS = {
 
 import json as _json_mod
 
+# Sentinel returned by _fetch_ferc_p8file for CEII/restricted filings (403 or exhausted 401).
+# Distinct from b"" (unrecognized format) so the caller can label them differently.
+_RESTRICTED_SENTINEL = b"\x00CEII-RESTRICTED"
+
 
 async def _fetch_ferc_p8file(file_id: str) -> bytes:
     """Download a FERC PDF via File/DownloadP8File (FileNet P8 CMS).
 
     Requires a two-step flow: GET /eLibrary/ to get session cookies (F5 load-balancer
     + TS security token), then POST DownloadP8File with {"fileidLst": [file_id]}.
+
+    Returns:
+        PDF/ZIP/DOCX bytes on success.
+        _RESTRICTED_SENTINEL if 403 (CEII/permanent) or 401 after retry exhaustion.
+        b"" on unrecognized format.
     """
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=60,
-        headers=_FERC_BROWSER_HEADERS,
-    ) as client:
-        # Step 1: get session cookies
-        await client.get(f"{_FERC_ELIBRARY_BASE}/eLibrary/")
-        # Step 2: download PDF bytes
-        resp = await client.post(
-            _FERC_P8FILE_URL,
-            content=_json_mod.dumps({"fileidLst": [file_id]}),
-        )
-        if resp.status_code in (401, 403):
-            # 401/403 = access-restricted filing (CEII/privileged, or transient rate-limit).
-            # Label honestly — extraction will be metadata-only for this filing.
-            logger.warning(
-                "DownloadP8File restricted (status=%d) fileId=%s — "
-                "likely CEII/privileged (permanent) or rate-limit (transient); skip PDF",
-                resp.status_code, file_id,
+    for attempt in range(3):
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=60,
+            headers=_FERC_BROWSER_HEADERS,
+        ) as client:
+            await client.get(f"{_FERC_ELIBRARY_BASE}/eLibrary/")
+            resp = await client.post(
+                _FERC_P8FILE_URL,
+                content=_json_mod.dumps({"fileidLst": [file_id]}),
             )
-            return b""
+
+        if resp.status_code == 403:
+            # 403 = CEII/privileged — permanent access restriction; no point retrying.
+            logger.warning("DownloadP8File 403 access-restricted (CEII/privileged) fileId=%s", file_id)
+            return _RESTRICTED_SENTINEL
+
+        if resp.status_code == 401:
+            # 401 = unauthorized — transient (session expired or rate-limit); retry with backoff.
+            if attempt < 2:
+                wait = 5 * (attempt + 1)
+                logger.warning(
+                    "DownloadP8File 401 unauthorized fileId=%s — retry %d/2 in %ds",
+                    file_id, attempt + 1, wait,
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(wait)
+                continue
+            logger.warning("DownloadP8File 401 unauthorized exhausted retries fileId=%s", file_id)
+            return _RESTRICTED_SENTINEL
+
         resp.raise_for_status()
+
         if resp.content[:4] == b"%PDF":
             return resp.content
         # ZIP archive: FERC commonly packages order + dissent together.
@@ -595,6 +637,8 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
             resp.status_code, len(resp.content), resp.content[:8], file_id,
         )
         return b""
+
+    return b""  # unreachable; satisfies type checker
 
 
 async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict) -> None:
@@ -642,6 +686,44 @@ def _pdf_text(content: bytes) -> str:
     except Exception:
         logger.warning("pdfplumber failed, returning empty string")
         return ""
+
+
+def _extract_tables_as_markdown(content: bytes, max_chars: int = 4000) -> str:
+    """Extract structured tables from a PDF and return pipe-delimited Markdown, capped.
+
+    Wide landscape tables (e.g. RTEP cost-allocation) lose column alignment under
+    extract_text(); extract_tables() preserves cell boundaries. Cap prevents token blow-up
+    for dense tables (100 rows × 20 zones ≈ 60 kB of raw text).
+    """
+    try:
+        with pdfplumber.open(BytesIO(content)) as pdf:
+            rows: list[str] = []
+            for page in pdf.pages[:40]:
+                for table in (page.extract_tables() or []):
+                    if not table:
+                        continue
+                    for row in table:
+                        cells = [str(c or "").strip() for c in row]
+                        rows.append(" | ".join(cells))
+                if sum(len(r) + 1 for r in rows) > max_chars:
+                    break
+            return "\n".join(rows)[:max_chars]
+    except Exception:
+        return ""
+
+
+def _is_scanned_pdf(content: bytes) -> bool:
+    """True if the PDF has page images but no extractable text — likely a scanned document."""
+    if content[:4] != b"%PDF":
+        return False
+    try:
+        with pdfplumber.open(BytesIO(content)) as pdf:
+            for page in pdf.pages[:5]:
+                if page.images and not (page.extract_text() or "").strip():
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _docx_text(content: bytes) -> str:

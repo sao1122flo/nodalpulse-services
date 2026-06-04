@@ -228,7 +228,17 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
     description = item.get("description", "")
     filer = _get_author(item)
     transmittals = item.get("transmittals", [])
-    ferc_file_id = transmittals[0].get("fileId", "") if transmittals else ""
+
+    # Primary transmittal: prefer "Attachment A" by fileName (RTEP cost-allocation table
+    # lives in Attachment A, not the transmittal letter). Fall back to transmittals[0].
+    primary = (
+        next(
+            (t for t in transmittals if "attachment a" in t.get("fileName", "").lower()),
+            transmittals[0],
+        )
+        if transmittals else {}
+    )
+    ferc_file_id = primary.get("fileId", "")
 
     return RawFiling(
         source_slug="ferc",
@@ -245,8 +255,12 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
             "description": description,
             "filer": filer,
             "ferc_file_id": ferc_file_id,
-            "ferc_file_name": transmittals[0].get("fileName", "") if transmittals else "",
+            "ferc_file_name": primary.get("fileName", ""),
             "ferc_accession": acc,
+            "ferc_transmittals": [
+                {"fileId": t.get("fileId", ""), "fileName": t.get("fileName", "")}
+                for t in transmittals
+            ],
         },
     )
 
