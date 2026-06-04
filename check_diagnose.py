@@ -9,7 +9,7 @@ async def main():
         SELECT j.id::text, j.status, jr.output::text, jr.finished_at
         FROM   jobs j LEFT JOIN job_results jr ON jr.job_id = j.id
         WHERE  j.kind = 'diagnose-ferc'
-        ORDER  BY j.created_at DESC LIMIT 3
+        ORDER  BY j.created_at DESC LIMIT 2
     """)
     for r in rows:
         print(f"\n=== job {r['id'][:8]}  status={r['status']}  finished={str(r['finished_at'])[:19] if r['finished_at'] else 'pending'} ===")
@@ -25,25 +25,27 @@ async def main():
             if err:
                 print(f"    ERROR: {err}")
                 continue
-            print(f"    status={data.get('status','?')}  totalHits={data.get('totalHits','?')}")
-            if "first_item_keys" in data:
-                print(f"    field_names: {data['first_item_keys']}")
-            if "first_item" in data and data["first_item"]:
-                item = data["first_item"]
+            if data.get("parse_error"):
+                print(f"    PARSE_ERROR: {data['parse_error']}")
+                print(f"    preview: {data.get('preview','')[:200]}")
+                continue
+            if data.get("skipped"):
+                print(f"    SKIPPED: {data['skipped']}")
+                print(f"    probe1_item_keys: {data.get('probe1_item_keys')}")
+                continue
+            print(f"    status={data.get('status','?')}  totalHits={data.get('total_hits_raw','?')}  items_key={data.get('items_key_found')}  items_count={data.get('items_count')}")
+            print(f"    top_keys: {data.get('top_keys')}")
+            print(f"    first_item_keys: {data.get('first_item_keys')}")
+            item = data.get("first_item", {})
+            if item:
                 for k, v in item.items():
-                    sv = str(v)[:120]
-                    print(f"      {k}: {sv}")
-            if "first_3_descriptions" in data:
-                for d in data["first_3_descriptions"]:
-                    print(f"      desc: {str(d)[:100]}")
-            if "first_3_dockets" in data:
-                print(f"      dockets: {data['first_3_dockets']}")
+                    print(f"      {k}: {str(v)[:120]}")
+            small = data.get("full_json_if_small")
+            if small and small != "<too large>" and not item:
+                print(f"    full_json: {json.dumps(small)[:800]}")
+            # PDF probe
             if "is_pdf" in data:
                 print(f"    accession={data.get('accession_used')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('content_type')}")
-            if "skipped" in data:
-                print(f"    SKIPPED: {data['skipped']}  probe1_keys={data.get('probe1_keys')}")
-            if "preview" in data:
-                print(f"    preview: {data['preview'][:300]}")
     await conn.close()
 
 asyncio.run(main())
