@@ -27,16 +27,25 @@ async def main():
             if data.get("skipped"):
                 print(f"    SKIPPED  p1_keys={data.get('p1_keys')}")
                 continue
-            print(f"    status={data.get('status','?')}  top_keys={data.get('top_keys')}  items_key={data.get('items_key')}  items_count={data.get('items_count')}")
-            if data.get("first_item_keys"):
-                print(f"    first_item_keys: {data['first_item_keys']}")
-            item = data.get("first_item", {})
-            for k, v in item.items():
-                print(f"      {k}: {str(v)[:120]}")
-            if data.get("raw_preview"):
-                print(f"    raw_preview: {data['raw_preview'][:600]}")
+            # PDF probes
             if "is_pdf" in data:
-                print(f"    acc={data.get('acc')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('ct')}")
+                print(f"    status={data.get('status')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('ct')}")
+                if data.get("preview"):
+                    print(f"    preview: {data['preview'][:200]}")
+                continue
+            # Affiliation probe
+            if "totalHits" in data:
+                print(f"    status={data.get('status')}  totalHits={data.get('totalHits')}  items_count={data.get('items_count')}")
+                for i, (affils, dockets, desc) in enumerate(zip(
+                    data.get("first_3_affils", []),
+                    data.get("first_3_dockets", []),
+                    data.get("first_3_descriptions", []),
+                )):
+                    print(f"    [{i}] affils={affils}  dockets={dockets}")
+                    print(f"         desc: {desc[:100]}")
+                continue
+            # Generic
+            print(f"    {json.dumps(data)[:400]}")
     await conn.close()
 
 asyncio.run(main())
