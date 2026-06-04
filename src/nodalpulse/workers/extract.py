@@ -562,14 +562,29 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
             )
             return b""
         resp.raise_for_status()
-        if not resp.content or resp.content[:4] != b"%PDF":
-            # ZIP, HTML, or other non-PDF — log and return empty
-            logger.warning(
-                "DownloadP8File non-PDF: status=%d len=%d head=%r fileId=%s",
-                resp.status_code, len(resp.content), resp.content[:8], file_id,
-            )
-            return b""
-        return resp.content
+        if resp.content[:4] == b"%PDF":
+            return resp.content
+        # ZIP archive: FERC commonly packages order + dissent together.
+        # Extract the largest PDF inside.
+        if resp.content[:2] == b"PK":
+            import zipfile, io
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(resp.content))
+                pdfs = [(name, zf.getinfo(name).file_size) for name in zf.namelist()
+                        if name.lower().endswith(".pdf")]
+                if pdfs:
+                    best = max(pdfs, key=lambda x: x[1])[0]
+                    logger.info("DownloadP8File ZIP: extracted %s (%d bytes) from archive fileId=%s",
+                                best, zf.getinfo(best).file_size, file_id)
+                    return zf.read(best)
+            except Exception as exc:
+                logger.warning("DownloadP8File ZIP extraction failed fileId=%s: %s", file_id, exc)
+        # Truly unrecognized format
+        logger.warning(
+            "DownloadP8File non-PDF/ZIP: status=%d len=%d head=%r fileId=%s",
+            resp.status_code, len(resp.content), resp.content[:8], file_id,
+        )
+        return b""
 
 
 async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict) -> None:
