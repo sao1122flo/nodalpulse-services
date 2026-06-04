@@ -1,28 +1,32 @@
-"""FERC eLibrary adapter — shared FERC layer for CAISO + PJM.
+"""FERC eLibrarywebapi adapter — shared FERC layer for CAISO + PJM.
 
-Polls the eCollection RSS firehose (ecollection.ferc.gov/api/rssfeed), filters
-by a watched set of docket numbers, and emits normalized RawFiling objects.
+Polls https://elibrary.ferc.gov/eLibrarywebapi/api/Search/AdvancedSearch
+per watched docket and emits normalized RawFiling objects.
 
-Design decisions (engineering-kickoff-brief.md §T2):
-- Feed is all-FERC (~650 items/month cap); filtering is client-side by docket set.
-- Multi-docket captions (e.g. ER23-2309, ER24-1394, EL26-34) → all docket IDs
-  captured in metadata["docket_numbers"]. run_adapter creates docket rows for all
-  of them; filings.docket_id links to the primary. T4 adds the junction rows.
-- Sub-docket suffix (-000/-001) is normalized away for matching; the raw title
-  is preserved in metadata so extraction can inspect sub-docket context.
-- Content is NOT downloaded at crawl time. source_url is persisted; R2 upload
-  happens at extraction time (deferred per the R2 free-tier decision).
-- Reused by PJM in Week 3 without modification — this is the shared FERC layer.
+Replaces the defunct ecollection.ferc.gov/api/rssfeed (returned XBRL data,
+not tariff filings — zero useful hits since the adapter was built).
+
+PDF strategy by filer:
+- PJM own filings (AUTHOR affiliation == "PJM Interconnection, L.L.C.") →
+  source_url = pjm.com/-/media/DotCom/documents/ferc/filings/{year}/{YYYYMMDD}-{docket}-000.pdf
+- All others → source_url = ""; metadata["ferc_file_id"] carries transmittals[0].fileId
+  for DownloadFile+session fetch at extraction time (gating issue tracked in #64).
+
+Design decisions:
+- Multi-docket: docketNumbers[] list → all captured in metadata["docket_numbers"]
+- Dedup key: acesssionNumber (FERC API typo, field name preserved) → external_id, YYYYMMDD-NNNN
+- Filed cursor: filedDate (MM/DD/YYYY) — not postedDate or issuedDate
+- Sequential per-docket queries; no parallel calls to FERC servers
+- Discovery pump removed — broken affiliations filter (service-list match, not author);
+  new PJM dockets are seeded manually, consistent with all other jurisdictions
 """
 
 from __future__ import annotations
 
-import hashlib
+import json
 import logging
 import re
-import xml.etree.ElementTree as ET
 from datetime import UTC, date, datetime, timedelta
-from email.utils import parsedate_to_datetime
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -31,19 +35,25 @@ from nodalpulse.crawlers.base import MarketAdapter, RawFiling
 
 logger = logging.getLogger(__name__)
 
-_FEED_URL = "https://ecollection.ferc.gov/api/rssfeed"
+_BASE = "https://elibrary.ferc.gov/eLibrarywebapi/api"
+_SEARCH_URL = f"{_BASE}/Search/AdvancedSearch"
+_RESULTS_PER_PAGE = 50
 
-# FERC docket ID: 1-4 uppercase letter prefix, 2-digit year, sequence, optional 3-digit sub-docket.
-# Covers ER (rates/tariff), EL (complaints), RM (rulemaking), OA (orders applicable), and others.
-_DOCKET_RE = re.compile(r"\b([A-Z]{1,4}\d{2}-\d+(?:-\d{3})?)\b")
+_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 NodalPulse/1.0 regulatory-monitor",
+    "Origin": "https://elibrary.ferc.gov",
+    "Referer": "https://elibrary.ferc.gov/",
+}
 
-# Sub-docket suffix to strip for base-docket normalization: ER23-2309-000 → ER23-2309
+# Sub-docket suffix: ER23-2309-000 → ER23-2309
 _SUB_DOCKET_RE = re.compile(r"-\d{3}$")
 
-# FERC accession number: 14-digit timestamp (YYYYMMDDHHMMSS) in URLs / GUIDs
-_ACCESSION_RE = re.compile(r"\d{14}")
+# PJM Interconnection filer string as it appears in the FERC API affiliations[]
+_PJM_FILER = "PJM Interconnection, L.L.C."
 
-# Ordered map: longest/most-specific key first so "request for rehearing" beats "request"
+# Ordered map: most-specific key first so "request for rehearing" beats "rehearing"
 _DOC_TYPE_MAP: dict[str, str] = {
     "tariff amendment": "ferc-tariff-amendment",
     "request for rehearing": "ferc-rehearing",
@@ -54,6 +64,7 @@ _DOC_TYPE_MAP: dict[str, str] = {
     "notice of cancellation": "ferc-cancellation",
     "notice of termination": "ferc-cancellation",
     "petition for waiver": "ferc-petition",
+    "tariff filing": "ferc-tariff-amendment",
     "compliance": "ferc-compliance",
     "rehearing": "ferc-rehearing",
     "protest": "ferc-protest",
@@ -67,20 +78,16 @@ _DOC_TYPE_MAP: dict[str, str] = {
     "cancellation": "ferc-cancellation",
     "notice": "ferc-notice",
     "complaint": "ferc-complaint",
-    # "order" is last so more-specific keys (e.g. "notice of cancellation") match first.
-    # Not every FERC order is a rehearable final disposition — procedural orders don't
-    # start the 30-day FPA §313 clock. The deadline engine surfaces "rehearing — 30d
-    # from order" and lets beta users flag false positives during the reliability window.
     "order": "ferc-order",
 }
 
 
 class FercAdapter(MarketAdapter):
-    """Shared FERC eLibrary adapter. Used by CAISO (Week 1) and PJM (Week 3).
+    """Shared FERC eLibrarywebapi adapter. Used by CAISO (crawl-ferc) and PJM (crawl-pjm).
 
     Args:
         docket_numbers: Base FERC docket IDs to watch, e.g. {"ER23-2309", "EL26-34"}.
-                        Sub-docket suffixes (-000/-001) are normalized away before matching.
+                        Sub-docket suffixes (-000/-001) are normalized away before querying.
     """
 
     source_slug = "ferc"
@@ -92,201 +99,189 @@ class FercAdapter(MarketAdapter):
         since_date = (
             datetime.fromisoformat(since).date() if since else date.today() - timedelta(days=1)
         )
+        until_date = date.today()
 
         if not self._watched:
             logger.info("FercAdapter: watch set empty — no dockets to poll")
             return []
 
-        logger.info("FercAdapter: polling %d dockets since=%s", len(self._watched), since_date)
-
-        all_items: list[dict] = []
-        months = _months_in_range(since_date, date.today())
-        async with httpx.AsyncClient(
-            timeout=30, headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"}
-        ) as client:
-            for year, month in months:
-                items = await _fetch_feed(client, year, month)
-                all_items.extend(items)
-
         logger.info(
-            "FercAdapter: RSS returned %d raw items across %d month(s)", len(all_items), len(months)
+            "FercAdapter: polling %d dockets since=%s until=%s",
+            len(self._watched), since_date, until_date,
         )
 
         filings: list[RawFiling] = []
         seen_ids: set[str] = set()
-        for item in all_items:
-            filing = self._item_to_filing(item, since_date)
-            if filing and filing.external_id not in seen_ids:
-                filings.append(filing)
-                seen_ids.add(filing.external_id)
 
-        logger.info("FercAdapter: %d filings match watched dockets", len(filings))
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
+            for docket in sorted(self._watched):
+                items = await _fetch_docket(client, docket, since_date, until_date)
+                for item in items:
+                    filing = _item_to_filing(item, since_date)
+                    if filing and filing.external_id not in seen_ids:
+                        filings.append(filing)
+                        seen_ids.add(filing.external_id)
+
+        logger.info("FercAdapter: %d new filings across %d dockets", len(filings), len(self._watched))
         return filings
 
-    def _item_to_filing(self, item: dict, since_date: date) -> RawFiling | None:
-        """Convert RSS item → RawFiling, or None if outside date range / no watched docket."""
-        pub_dt = _parse_rss_date(item.get("pub_date", ""))
-        if not pub_dt:
-            return None
-        if pub_dt.date() < since_date:
-            return None
 
-        title = item.get("title", "")
-        description = item.get("description", "")
-        docket_numbers = _parse_dockets(f"{title} {description}")
-
-        if not (self._watched & set(docket_numbers)):
-            return None  # no watched docket in this caption
-
-        external_id = _make_external_id(item)
-        source_url = item.get("link") or item.get("guid", "")
-
-        return RawFiling(
-            source_slug="ferc",
-            external_id=external_id,
-            doc_type=_infer_doc_type(title),
-            title=title,
-            source_url=source_url,
-            filed_at=pub_dt.isoformat(),
-            content=b"",  # deferred — R2 upload happens at extraction time, not crawl time
-            file_ext="pdf",
-            metadata={
-                "docket_numbers": docket_numbers,  # list — run_adapter links ALL of them
-                "raw_title": title,
-                "description": description,
-                "guid": item.get("guid", ""),
-            },
-        )
-
-
-# ── RSS fetch + parse ─────────────────────────────────────────────────────────
+# ── eLibrarywebapi fetch ──────────────────────────────────────────────────────
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-async def _fetch_feed(client: httpx.AsyncClient, year: int, month: int) -> list[dict]:
-    params = {"month": f"{month:02d}", "year": str(year)}
-    logger.debug("FercAdapter: fetching RSS year=%d month=%02d", year, month)
-    resp = await client.get(_FEED_URL, params=params)
-    resp.raise_for_status()
-    return _parse_rss(resp.text)
+async def _fetch_docket(
+    client: httpx.AsyncClient,
+    docket: str,
+    since: date,
+    until: date,
+) -> list[dict]:
+    """Fetch all filings for one docket in [since, until] via AdvancedSearch, paginated."""
+    items: list[dict] = []
+    page = 1
+
+    while True:
+        body = {
+            "searchText": "*",
+            "searchFullText": True,
+            "searchDescription": True,
+            "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}],
+            "dateSearches": [
+                {
+                    "startDate": since.strftime("%m-%d-%Y"),
+                    "endDate": until.strftime("%m-%d-%Y"),
+                    "dateType": "Filed Date",
+                }
+            ],
+            "affiliations": [],
+            "categories": [],
+            "libraries": [],
+            "classTypes": [],
+            "accessionNumber": None,
+            "eFiling": False,
+            "resultsPerPage": _RESULTS_PER_PAGE,
+            "curPage": page,
+            "groupBy": "NONE",
+            "sortBy": "",
+            "allDates": False,
+        }
+
+        logger.debug("FercAdapter: AdvancedSearch docket=%s since=%s page=%d", docket, since, page)
+        resp = await client.post(_SEARCH_URL, content=json.dumps(body))
+        resp.raise_for_status()
+        data = resp.json()
+
+        batch = data.get("searchHits", [])
+        items.extend(batch)
+        total = data.get("totalHits", 0)
+
+        logger.info(
+            "FercAdapter: docket=%s page=%d got=%d total=%d",
+            docket, page, len(batch), total,
+        )
+
+        if len(batch) < _RESULTS_PER_PAGE or len(items) >= total:
+            break
+        page += 1
+
+    return items
 
 
-def _parse_rss(xml_text: str) -> list[dict]:
-    """Parse RSS 2.0 or Atom feed → list of normalized item dicts."""
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as exc:
-        logger.warning("FercAdapter: XML parse error: %s", exc)
-        return []
-
-    if "feed" in root.tag.lower():
-        # Atom 1.0
-        ns = {"a": "http://www.w3.org/2005/Atom"}
-        return [_parse_atom_entry(e, ns) for e in root.findall("a:entry", ns)]
-
-    # RSS 2.0 — items nested under channel
-    return [_parse_rss_item(i) for i in root.findall(".//item")]
+# ── item → RawFiling ──────────────────────────────────────────────────────────
 
 
-def _parse_rss_item(item: ET.Element) -> dict:
-    def text(tag: str) -> str:
-        el = item.find(tag)
-        return (el.text or "").strip() if el is not None else ""
+def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
+    """Convert one eLibrarywebapi searchHit → RawFiling, or None if out of date range."""
+    # Field name is FERC's own typo — preserved intentionally
+    acc = item.get("acesssionNumber", "")
+    if not acc:
+        return None
 
-    return {
-        "title": text("title"),
-        "link": text("link"),
-        "pub_date": text("pubDate"),
-        "description": text("description"),
-        "guid": text("guid"),
-    }
+    filed = _parse_filed_date(item.get("filedDate", ""))
+    if not filed or filed < since_date:
+        return None
 
+    docket_numbers = [_normalize_docket(d) for d in item.get("docketNumbers", [])]
+    description = item.get("description", "")
+    filer = _get_author(item)
+    is_pjm = filer == _PJM_FILER
 
-def _parse_atom_entry(entry: ET.Element, ns: dict) -> dict:
-    def text(tag: str) -> str:
-        el = entry.find(tag, ns)
-        return (el.text or "").strip() if el is not None else ""
+    # PDF source URL: PJM.com slug for PJM filings; empty for FERC orders (deferred)
+    source_url = _pjm_pdf_url(item, docket_numbers) if is_pjm else ""
 
-    link_el = entry.find("a:link", ns)
-    link = link_el.get("href", "") if link_el is not None else ""
+    # For non-PJM: store first transmittal's fileId for extraction-time DownloadFile+session
+    transmittals = item.get("transmittals", [])
+    ferc_file_id = transmittals[0].get("fileId", "") if transmittals else ""
 
-    return {
-        "title": text("a:title"),
-        "link": link,
-        "pub_date": text("a:updated") or text("a:published"),
-        "description": text("a:summary") or text("a:content"),
-        "guid": text("a:id"),
-    }
+    return RawFiling(
+        source_slug="ferc",
+        external_id=acc,
+        doc_type=_infer_doc_type(item),
+        title=description,
+        source_url=source_url,
+        filed_at=filed.isoformat() + "T00:00:00+00:00",
+        content=b"",   # deferred — R2 upload happens at extraction time
+        file_ext="pdf",
+        metadata={
+            "docket_numbers": docket_numbers,
+            "raw_title": description,
+            "description": description,
+            "filer": filer,
+            "ferc_file_id": ferc_file_id,
+            "ferc_accession": acc,
+            "is_pjm_filing": is_pjm,
+        },
+    )
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
 def _normalize_docket(docket: str) -> str:
-    """Strip -000/-001 sub-docket suffix → base docket ID for matching."""
     return _SUB_DOCKET_RE.sub("", docket.strip().upper())
 
 
-def _parse_dockets(text: str) -> list[str]:
-    """Extract all FERC docket IDs from text, deduplicated and normalized to base dockets.
-
-    Preserves order of first occurrence so the primary captioned docket is first.
-    Example: "ER23-2309, ER24-1394, EL26-34 DCR Transmission" → ["ER23-2309", "ER24-1394", "EL26-34"]
-    """
-    seen: dict[str, None] = {}  # insertion-ordered set
-    for raw in _DOCKET_RE.findall(text):
-        seen.setdefault(_normalize_docket(raw), None)
-    return list(seen)
-
-
-def _make_external_id(item: dict) -> str:
-    """Derive a stable, unique external_id from an RSS item.
-
-    Prefers the 14-digit FERC accession number found in GUID or link URL.
-    Falls back to a SHA-1 hash of the link URL for items with non-standard GUIDs.
-    """
-    for candidate in (item.get("guid", ""), item.get("link", "")):
-        m = _ACCESSION_RE.search(candidate)
-        if m:
-            return m.group(0)
-    raw = (item.get("link") or item.get("guid") or item.get("title", "")).encode()
-    return "ferc-" + hashlib.sha1(raw).hexdigest()[:16]
-
-
-def _parse_rss_date(raw: str) -> datetime | None:
-    """Parse RSS pubDate or Atom updated → UTC datetime."""
-    if not raw:
-        return None
+def _parse_filed_date(raw: str) -> date | None:
+    """Parse MM/DD/YYYY (FERC API date format) → date."""
     try:
-        return parsedate_to_datetime(raw).astimezone(UTC)
-    except Exception:
-        pass
-    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
-        try:
-            naive = datetime.strptime(raw.strip(), fmt)
-            return naive.replace(tzinfo=UTC)
-        except ValueError:
-            continue
-    logger.warning("FercAdapter: unparseable date %r", raw)
+        return datetime.strptime(raw.strip(), "%m/%d/%Y").date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _get_author(item: dict) -> str | None:
+    """Return the AUTHOR affiliation name from a searchHit, or None."""
+    for aff in item.get("affiliations", []):
+        if aff.get("afType", "").upper() == "AUTHOR":
+            return aff.get("affiliation")
     return None
 
 
-def _infer_doc_type(title: str) -> str:
-    """Infer FERC filing type from title via longest-match. Defaults to ferc-filing."""
-    lower = title.lower()
-    for key, doc_type in _DOC_TYPE_MAP.items():
-        if key in lower:
-            return doc_type
+def _pjm_pdf_url(item: dict, docket_numbers: list[str]) -> str:
+    """Construct the PJM.com PDF URL for a PJM-authored FERC filing.
+
+    Pattern: pjm.com/-/media/DotCom/documents/ferc/filings/{year}/{YYYYMMDD}-{docket}-000.pdf
+    where YYYYMMDD is the filed date and {docket} is the primary captioned docket.
+    """
+    filed = _parse_filed_date(item.get("filedDate", ""))
+    if not filed or not docket_numbers:
+        return ""
+    primary = docket_numbers[0]
+    return (
+        f"https://www.pjm.com/-/media/DotCom/documents/ferc/filings"
+        f"/{filed.year}/{filed.strftime('%Y%m%d')}-{primary}-000.pdf"
+    )
+
+
+def _infer_doc_type(item: dict) -> str:
+    """Infer FERC doc_type from classTypes[], falling back to description keywords."""
+    for ct in item.get("classTypes", []):
+        doc_type_str = ct.get("documentType", "").lower()
+        for key, val in _DOC_TYPE_MAP.items():
+            if key in doc_type_str:
+                return val
+    desc = item.get("description", "").lower()
+    for key, val in _DOC_TYPE_MAP.items():
+        if key in desc:
+            return val
     return "ferc-filing"
-
-
-def _months_in_range(since: date, until: date) -> list[tuple[int, int]]:
-    """Return (year, month) pairs covering since..until inclusive."""
-    months: list[tuple[int, int]] = []
-    y, m = since.year, since.month
-    while (y, m) <= (until.year, until.month):
-        months.append((y, m))
-        m += 1
-        if m > 12:
-            m, y = 1, y + 1
-    return months
