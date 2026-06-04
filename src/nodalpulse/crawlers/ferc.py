@@ -26,10 +26,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from nodalpulse.crawlers.base import MarketAdapter, RawFiling
 
@@ -101,23 +100,22 @@ class FercAdapter(MarketAdapter):
         since_date = (
             datetime.fromisoformat(since).date() if since else date.today() - timedelta(days=1)
         )
-        until_date = date.today()
 
         if not self._watched:
             logger.info("FercAdapter: watch set empty — no dockets to poll")
             return []
 
-        logger.info(
-            "FercAdapter: polling %d dockets since=%s until=%s",
-            len(self._watched), since_date, until_date,
-        )
+        logger.info("FercAdapter: polling %d dockets since=%s", len(self._watched), since_date)
 
         filings: list[RawFiling] = []
         seen_ids: set[str] = set()
 
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
             for docket in sorted(self._watched):
-                items = await _fetch_docket(client, docket, since_date, until_date)
+                # Note: FERC dateSearches filter is non-functional (always returns 0 with
+                # allDates=False). Fetch all pages with allDates=True; filter by filedDate
+                # in Python. _item_to_filing() enforces the since_date cutoff.
+                items = await _fetch_docket(client, docket)
                 for item in items:
                     filing = _item_to_filing(item, since_date)
                     if filing and filing.external_id not in seen_ids:
@@ -131,30 +129,26 @@ class FercAdapter(MarketAdapter):
 # ── eLibrarywebapi fetch ──────────────────────────────────────────────────────
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-async def _fetch_docket(
-    client: httpx.AsyncClient,
-    docket: str,
-    since: date,
-    until: date,
-) -> list[dict]:
-    """Fetch all filings for one docket in [since, until] via AdvancedSearch, paginated."""
+_MAX_PAGES_PER_DOCKET = 10  # cap at 500 items per docket per run (safety valve)
+
+
+async def _fetch_docket(client: httpx.AsyncClient, docket: str) -> list[dict]:
+    """Fetch all filings for one docket via AdvancedSearch (allDates=True), paginated.
+
+    FERC's dateSearches filter is non-functional (always returns totalHits=0 when
+    allDates=False). Workaround: fetch the full catalog with allDates=True and apply
+    the since_date cutoff in Python inside _item_to_filing().
+    """
     items: list[dict] = []
     page = 1
 
-    while True:
+    while page <= _MAX_PAGES_PER_DOCKET:
         body = {
             "searchText": "*",
             "searchFullText": True,
             "searchDescription": True,
             "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}],
-            "dateSearches": [
-                {
-                    "startDate": since.strftime("%m-%d-%Y"),
-                    "endDate": until.strftime("%m-%d-%Y"),
-                    "dateType": "Filed Date",
-                }
-            ],
+            "dateSearches": [],
             "affiliations": [],
             "categories": [],
             "libraries": [],
@@ -165,26 +159,27 @@ async def _fetch_docket(
             "curPage": page,
             "groupBy": "NONE",
             "sortBy": "",
-            "allDates": False,
+            "allDates": True,
         }
 
-        logger.debug("FercAdapter: AdvancedSearch docket=%s since=%s page=%d", docket, since, page)
+        logger.debug("FercAdapter: AdvancedSearch docket=%s page=%d", docket, page)
         resp = await client.post(_SEARCH_URL, content=json.dumps(body))
         resp.raise_for_status()
         data = resp.json()
 
         batch = data.get("searchHits", [])
-        items.extend(batch)
         total = data.get("totalHits", 0)
+        items.extend(batch)
 
-        logger.info(
-            "FercAdapter: docket=%s page=%d got=%d total=%d",
-            docket, page, len(batch), total,
-        )
+        logger.info("FercAdapter: docket=%s page=%d got=%d total=%d", docket, page, len(batch), total)
 
         if len(batch) < _RESULTS_PER_PAGE or len(items) >= total:
             break
         page += 1
+
+    if page > _MAX_PAGES_PER_DOCKET:
+        logger.warning("FercAdapter: docket=%s hit page cap (%d pages), may have missed older items",
+                       docket, _MAX_PAGES_PER_DOCKET)
 
     return items
 
