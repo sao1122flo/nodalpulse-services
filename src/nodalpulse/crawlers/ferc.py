@@ -47,8 +47,10 @@ _HEADERS = {
     "Referer": "https://elibrary.ferc.gov/",
 }
 
-# Sub-docket suffix: ER23-2309-000 → ER23-2309
-_SUB_DOCKET_RE = re.compile(r"-\d{3}$")
+# Sub-docket suffix: ER23-2309-000 → ER23-2309, ER23-2309-001 → ER23-2309.
+# Must only match 0-prefixed 3-digit suffixes (000-099) so that dockets whose
+# sequence number is 3 digits (e.g. EL24-119) are NOT truncated.
+_SUB_DOCKET_RE = re.compile(r"-0\d{2}$")
 
 # PJM Interconnection filer string as it appears in the FERC API affiliations[]
 _PJM_FILER = "PJM Interconnection, L.L.C."
