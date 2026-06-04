@@ -34,6 +34,7 @@ import re
 from datetime import date, datetime, timedelta
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from nodalpulse.crawlers.base import MarketAdapter, RawFiling
 
@@ -115,7 +116,7 @@ class FercAdapter(MarketAdapter):
         filings: list[RawFiling] = []
         seen_ids: set[str] = set()
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers=_HEADERS) as client:
             for docket in sorted(self._watched):
                 items = await _fetch_docket(client, docket, since_date)
                 for item in items:
@@ -132,6 +133,14 @@ class FercAdapter(MarketAdapter):
 
 
 _MAX_PAGES_PER_DOCKET = 10  # hard cap; safety valve for very large dockets
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+async def _post_with_retry(client: httpx.AsyncClient, body: dict) -> dict:
+    """POST AdvancedSearch with retry on timeout/5xx."""
+    resp = await client.post(_SEARCH_URL, content=json.dumps(body))
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def _fetch_docket(
@@ -170,9 +179,7 @@ async def _fetch_docket(
             "allDates": True,
         }
 
-        resp = await client.post(_SEARCH_URL, content=json.dumps(body))
-        resp.raise_for_status()
-        data = resp.json()
+        data = await _post_with_retry(client, body)
 
         batch = data.get("searchHits", [])
         total = data.get("totalHits", 0)
