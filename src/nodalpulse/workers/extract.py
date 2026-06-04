@@ -553,8 +553,13 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
             content=_json_mod.dumps({"fileidLst": [file_id]}),
         )
         if resp.status_code in (401, 403):
-            # Some FERC filings have access restrictions; skip gracefully
-            logger.warning("DownloadP8File auth error %d for fileId=%s — skipping", resp.status_code, file_id)
+            # 401/403 = access-restricted filing (CEII/privileged, or transient rate-limit).
+            # Label honestly — extraction will be metadata-only for this filing.
+            logger.warning(
+                "DownloadP8File restricted (status=%d) fileId=%s — "
+                "likely CEII/privileged (permanent) or rate-limit (transient); skip PDF",
+                resp.status_code, file_id,
+            )
             return b""
         resp.raise_for_status()
         if not resp.content or resp.content[:4] != b"%PDF":

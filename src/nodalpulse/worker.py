@@ -13,8 +13,8 @@ from nodalpulse.workers.crawl_ferc import handle_crawl_ferc
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_imm import handle_crawl_imm
 from nodalpulse.workers.crawl_pjm_calendar import handle_crawl_pjm_calendar
-from nodalpulse.workers.bootstrap_pjm import handle_bootstrap_pjm
-from nodalpulse.workers.diagnose_ferc import handle_diagnose_ferc
+from nodalpulse.workers.bootstrap_pjm import handle_bootstrap_pjm  # TODO: remove after #64 verify complete
+from nodalpulse.workers.diagnose_ferc import handle_diagnose_ferc    # TODO: remove after #64 verify complete
 from nodalpulse.workers.extract import handle_extract
 from nodalpulse.workers.refresh_extraction import handle_refresh_extraction
 

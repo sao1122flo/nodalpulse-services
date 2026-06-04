@@ -102,12 +102,27 @@ async def get_ferc_docket_set() -> set[str]:
 
 
 async def get_pjm_ferc_docket_set() -> set[str]:
-    """Return PJM-FERC docket external_ids for the PJM RSS watch set.
+    """Return curated PJM-FERC docket external_ids for the daily crawl watch set.
 
-    Scoped to jurisdiction='PJM-FERC' only. Used by handle_crawl_pjm to build
-    a PJM-filtered FercAdapter instance without including CAISO or bare-FERC dockets.
+    Filters watched=true to return only intentionally-seeded dockets, NOT the
+    371-item explosion from multi-docket caption cross-refs. The watched flag
+    is set by sql/add_docket_watched_flag.sql for explicitly seeded dockets;
+    find_or_create_docket() defaults new rows to watched=false.
+
+    Falls back to all PJM-FERC dockets if the watched column doesn't exist yet
+    (before the migration is applied).
     """
     async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(
+                text("SELECT external_id FROM dockets WHERE jurisdiction = 'PJM-FERC' AND watched = true"),
+            )
+            rows = result.fetchall()
+            if rows:
+                return {row[0] for row in rows}
+        except Exception:
+            pass
+        # Fallback: watched column not yet migrated
         result = await session.execute(
             text("SELECT external_id FROM dockets WHERE jurisdiction = 'PJM-FERC'"),
         )

@@ -1,4 +1,4 @@
-"""Read diagnose-ferc job results — ER24-2236 RTEP filing list."""
+"""Read diagnose-ferc job results — RTEP Schedule 12 probe."""
 import asyncio, asyncpg, json
 
 DB_URL = "postgresql://postgres:IYMFvbJloSVssntQgRkIdoBMXXjPihtS@trolley.proxy.rlwy.net:35031/railway"
@@ -17,18 +17,19 @@ async def main():
             print("  (no output yet)")
             continue
         out = json.loads(r["output"])
-        for docket, data in out.items():
+        for probe, data in out.items():
             if not isinstance(data, dict):
                 continue
             if "error" in data:
-                print(f"\n  [{docket}] ERROR: {data['error']}")
+                print(f"\n  [{probe}] ERROR: {data['error']}")
                 continue
             filings = data.get("filings", [])
-            print(f"\n  [{docket}] totalHits={data.get('totalHits')}  filings={len(filings)}")
+            print(f"\n  [{probe}] totalHits={data.get('totalHits')}  returned={len(filings)}")
             for f in filings:
-                print(f"    {f['acc']}  {f['filed']}  {f['filer']}")
-                print(f"      doc_type={f['doc_type_raw']}  file_id={f['file_id']}")
-                print(f"      desc: {f['desc'][:80]}")
+                print(f"    {f.get('acc')}  {f.get('filed')}  filer={f.get('filer')}")
+                print(f"      doc_type={f.get('doc_type', f.get('doc_type_raw'))}  dockets={f.get('dockets')}")
+                print(f"      file_id={f.get('file_id')}")
+                print(f"      desc: {f.get('desc','')[:100]}")
     await conn.close()
 
 asyncio.run(main())

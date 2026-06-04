@@ -1,4 +1,4 @@
-"""Diagnostic: fetch all ER24-2236 filings (all dates) to find RTEP tariff filing."""
+"""Probe: find PJM Schedule 12-Appendix A RTEP cost allocation docket (2026)."""
 import json
 import logging
 import httpx
@@ -15,51 +15,139 @@ _HEADERS = {
 }
 
 
+def _search_body(text, docket=None, affil=None, start=None, end=None, page=1):
+    return {
+        "searchText": text,
+        "searchFullText": False,
+        "searchDescription": True,
+        "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}] if docket else [],
+        "dateSearches": [{"startDate": start, "endDate": end, "dateType": "Filed Date"}] if start else [],
+        "affiliations": [affil] if affil else [],
+        "categories": [],
+        "libraries": ["Electric"],
+        "classTypes": [],
+        "accessionNumber": None,
+        "eFiling": False,
+        "resultsPerPage": 10, "curPage": page,
+        "groupBy": "NONE", "sortBy": "", "allDates": not bool(start),
+    }
+
+
 async def handle_diagnose_ferc(payload: dict) -> dict:
-    """Fetch all ER24-2236 and ER24-2238 filings (all dates) for RTEP verify."""
+    """Search for PJM Schedule 12-Appendix A RTEP cost allocation filings."""
     out = {}
 
     async with httpx.AsyncClient(timeout=60, follow_redirects=True, headers=_HEADERS) as client:
-        for docket in ["ER24-2236", "ER24-2238"]:
-            try:
-                body = {
-                    "searchText": "*", "searchFullText": True, "searchDescription": True,
-                    "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}],
-                    "dateSearches": [], "affiliations": [], "categories": [],
-                    "libraries": [], "classTypes": [], "accessionNumber": None,
-                    "eFiling": False, "resultsPerPage": 50, "curPage": 1,
-                    "groupBy": "NONE", "sortBy": "", "allDates": True,
-                }
-                r = await client.post(f"{_BASE}/Search/AdvancedSearch",
-                                      content=json.dumps(body))
-                data = r.json()
-                hits = data.get("searchHits") or []
 
-                filings = []
-                for h in hits:
-                    transmittals = h.get("transmittals") or []
-                    filer = next(
-                        (a.get("affiliation") for a in h.get("affiliations", [])
-                         if a.get("afType", "").upper() == "AUTHOR"),
-                        None,
-                    )
-                    filings.append({
+        # Probe 1: ER24-843 (known RTEP PJM docket — backup)
+        try:
+            r = await client.post(f"{_BASE}/Search/AdvancedSearch",
+                                  content=json.dumps(_search_body("*", docket="ER24-843")))
+            d = r.json()
+            hits = d.get("searchHits") or []
+            out["er24_843"] = {
+                "totalHits": d.get("totalHits"),
+                "filings": [
+                    {
                         "acc": h.get("acesssionNumber"),
                         "filed": h.get("filedDate"),
-                        "filer": filer,
-                        "doc_type_raw": [ct.get("documentType") for ct in h.get("classTypes", [])],
-                        "desc": h.get("description", "")[:100],
-                        "file_id": transmittals[0].get("fileId") if transmittals else None,
-                        "file_name": transmittals[0].get("fileName") if transmittals else None,
-                    })
+                        "filer": next((a.get("affiliation") for a in h.get("affiliations", [])
+                                       if a.get("afType", "").upper() == "AUTHOR"), None),
+                        "doc_type": [ct.get("documentType") for ct in h.get("classTypes", [])],
+                        "desc": h.get("description", "")[:120],
+                        "file_id": (h.get("transmittals") or [{}])[0].get("fileId"),
+                        "dockets": h.get("docketNumbers", [])[:4],
+                    }
+                    for h in hits
+                ],
+            }
+            logger.info("er24_843: totalHits=%s hits=%d", d.get("totalHits"), len(hits))
+        except Exception as exc:
+            out["er24_843"] = {"error": str(exc)[:200]}
 
-                out[docket] = {
-                    "totalHits": data.get("totalHits"),
-                    "filings": filings,
-                }
-                logger.info("%s: totalHits=%d", docket, data.get("totalHits", 0))
-            except Exception as exc:
-                out[docket] = {"error": str(exc)[:200]}
-                logger.warning("%s: %s", docket, exc)
+        # Probe 2: "Schedule 12" text + PJM filer + 2026
+        try:
+            r = await client.post(f"{_BASE}/Search/AdvancedSearch",
+                                  content=json.dumps(_search_body(
+                                      "Schedule 12",
+                                      affil="PJM Interconnection, L.L.C.",
+                                      start="01-01-2026", end="06-04-2026")))
+            d = r.json()
+            hits = d.get("searchHits") or []
+            out["schedule12_pjm_2026"] = {
+                "totalHits": d.get("totalHits"),
+                "filings": [
+                    {
+                        "acc": h.get("acesssionNumber"),
+                        "filed": h.get("filedDate"),
+                        "filer": next((a.get("affiliation") for a in h.get("affiliations", [])
+                                       if a.get("afType", "").upper() == "AUTHOR"), None),
+                        "doc_type": [ct.get("documentType") for ct in h.get("classTypes", [])],
+                        "desc": h.get("description", "")[:120],
+                        "file_id": (h.get("transmittals") or [{}])[0].get("fileId"),
+                        "dockets": h.get("docketNumbers", [])[:4],
+                    }
+                    for h in hits
+                ],
+            }
+            logger.info("schedule12_pjm_2026: totalHits=%s hits=%d", d.get("totalHits"), len(hits))
+        except Exception as exc:
+            out["schedule12_pjm_2026"] = {"error": str(exc)[:200]}
+
+        # Probe 3: FERC order May 15 2026 (narrow window) containing "Schedule 12"
+        try:
+            r = await client.post(f"{_BASE}/Search/AdvancedSearch",
+                                  content=json.dumps(_search_body(
+                                      "Schedule 12 Appendix",
+                                      start="05-01-2026", end="06-04-2026")))
+            d = r.json()
+            hits = d.get("searchHits") or []
+            out["schedule12_appendix_may2026"] = {
+                "totalHits": d.get("totalHits"),
+                "filings": [
+                    {
+                        "acc": h.get("acesssionNumber"),
+                        "filed": h.get("filedDate"),
+                        "filer": next((a.get("affiliation") for a in h.get("affiliations", [])
+                                       if a.get("afType", "").upper() == "AUTHOR"), None),
+                        "doc_type": [ct.get("documentType") for ct in h.get("classTypes", [])],
+                        "desc": h.get("description", "")[:120],
+                        "file_id": (h.get("transmittals") or [{}])[0].get("fileId"),
+                        "dockets": h.get("docketNumbers", [])[:4],
+                    }
+                    for h in hits
+                ],
+            }
+            logger.info("schedule12_appendix_may2026: totalHits=%s hits=%d", d.get("totalHits"), len(hits))
+        except Exception as exc:
+            out["schedule12_appendix_may2026"] = {"error": str(exc)[:200]}
+
+        # Probe 4: "RTEP" + PJM + 2026 (broader)
+        try:
+            r = await client.post(f"{_BASE}/Search/AdvancedSearch",
+                                  content=json.dumps(_search_body(
+                                      "RTEP cost allocation",
+                                      affil="PJM Interconnection, L.L.C.",
+                                      start="01-01-2026", end="06-04-2026")))
+            d = r.json()
+            hits = d.get("searchHits") or []
+            out["rtep_cost_pjm_2026"] = {
+                "totalHits": d.get("totalHits"),
+                "filings": [
+                    {
+                        "acc": h.get("acesssionNumber"),
+                        "filed": h.get("filedDate"),
+                        "filer": next((a.get("affiliation") for a in h.get("affiliations", [])
+                                       if a.get("afType", "").upper() == "AUTHOR"), None),
+                        "desc": h.get("description", "")[:120],
+                        "file_id": (h.get("transmittals") or [{}])[0].get("fileId"),
+                        "dockets": h.get("docketNumbers", [])[:4],
+                    }
+                    for h in hits
+                ],
+            }
+            logger.info("rtep_cost_pjm_2026: totalHits=%s hits=%d", d.get("totalHits"), len(hits))
+        except Exception as exc:
+            out["rtep_cost_pjm_2026"] = {"error": str(exc)[:200]}
 
     return out
