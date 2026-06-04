@@ -6,30 +6,44 @@ DB_URL = "postgresql://postgres:IYMFvbJloSVssntQgRkIdoBMXXjPihtS@trolley.proxy.r
 async def main():
     conn = await asyncpg.connect(DB_URL, ssl="require")
     rows = await conn.fetch("""
-        SELECT j.status, jr.output::text, jr.finished_at
+        SELECT j.id::text, j.status, jr.output::text, jr.finished_at
         FROM   jobs j LEFT JOIN job_results jr ON jr.job_id = j.id
         WHERE  j.kind = 'diagnose-ferc'
-        ORDER  BY j.created_at DESC LIMIT 8
+        ORDER  BY j.created_at DESC LIMIT 3
     """)
     for r in rows:
-        out = json.loads(r["output"]) if r["output"] else {}
-        print(f"  {r['status']:8s}  {str(r['finished_at'])[:19] if r['finished_at'] else 'pending':19s}"
-              f"  {out.get('year','?')}-{str(out.get('month','?')).zfill(2)}"
-              f"  http={out.get('http_status','?')}  len={out.get('body_len','?')}"
-              f"  items={out.get('item_count','?')}")
-        for t in out.get("first_5_titles", []):
-            print(f"    title: {t}")
-        if out.get("body_preview"):
-            print(f"    body[:300]: {out['body_preview'][:300]}")
-        if out.get("error"):
-            print(f"    ERROR: {out['error']}")
-        # New multi-URL format
-        for name, r in out.items() if isinstance(out, dict) else []:
-            if isinstance(r, dict) and "url" in r:
-                err = r.get("error", "")
-                print(f"  {name:20s}  status={r.get('status','?'):3}  len={r.get('len','?'):7}  rss={r.get('is_rss','?')}  er/el={r.get('has_er_el','?')}  {err or ''}")
-                if r.get("preview"):
-                    print(f"    preview: {r['preview'][:150]}")
+        print(f"\n=== job {r['id'][:8]}  status={r['status']}  finished={str(r['finished_at'])[:19] if r['finished_at'] else 'pending'} ===")
+        if not r["output"]:
+            print("  (no output yet)")
+            continue
+        out = json.loads(r["output"])
+        for probe, data in out.items():
+            if not isinstance(data, dict):
+                continue
+            print(f"\n  [{probe}]")
+            err = data.get("error")
+            if err:
+                print(f"    ERROR: {err}")
+                continue
+            print(f"    status={data.get('status','?')}  totalHits={data.get('totalHits','?')}")
+            if "first_item_keys" in data:
+                print(f"    field_names: {data['first_item_keys']}")
+            if "first_item" in data and data["first_item"]:
+                item = data["first_item"]
+                for k, v in item.items():
+                    sv = str(v)[:120]
+                    print(f"      {k}: {sv}")
+            if "first_3_descriptions" in data:
+                for d in data["first_3_descriptions"]:
+                    print(f"      desc: {str(d)[:100]}")
+            if "first_3_dockets" in data:
+                print(f"      dockets: {data['first_3_dockets']}")
+            if "is_pdf" in data:
+                print(f"    accession={data.get('accession_used')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('content_type')}")
+            if "skipped" in data:
+                print(f"    SKIPPED: {data['skipped']}  probe1_keys={data.get('probe1_keys')}")
+            if "preview" in data:
+                print(f"    preview: {data['preview'][:300]}")
     await conn.close()
 
 asyncio.run(main())
