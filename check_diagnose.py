@@ -1,4 +1,4 @@
-"""Read diagnose-ferc job results — sort order + transmittals probe."""
+"""Read diagnose-ferc job results — DownloadP8File probe."""
 import asyncio, asyncpg, json
 
 DB_URL = "postgresql://postgres:IYMFvbJloSVssntQgRkIdoBMXXjPihtS@trolley.proxy.rlwy.net:35031/railway"
@@ -25,23 +25,22 @@ async def main():
             if err:
                 print(f"    ERROR: {err}")
                 continue
-            if probe == "sort_order":
-                print(f"    totalHits={data.get('totalHits')}")
-                print(f"    page1: dates={data.get('page1_dates')}  accs={data.get('page1_accs')}")
-                print(f"    page2: dates={data.get('page2_dates')}  accs={data.get('page2_accs')}")
+            if probe == "session_get":
+                print(f"    status={data.get('status')}  cookies={data.get('cookies')}  ct={data.get('ct')}")
                 continue
-            if probe.startswith("sort_"):
-                print(f"    status={data.get('status')}  dates={data.get('dates')}  accs={data.get('accs')}")
+            if probe == "filelist":
+                print(f"    status={data.get('status')}  ct={data.get('ct')}  len={data.get('len')}")
+                print(f"    preview: {data.get('preview','')[:300]}")
                 continue
-            if probe.startswith("acc_"):
-                print(f"    status={data.get('status')}  acc={data.get('found_acc')}  found={data.get('found', True)}")
-                print(f"    filed={data.get('filedDate')}  filer={data.get('filer')}")
-                print(f"    desc: {data.get('description','')[:100]}")
-                print(f"    dockets: {data.get('docketNumbers')}")
-                for t in data.get("transmittals", []):
-                    print(f"    transmittal: fileDesc={t.get('fileDesc')}  fileName={t.get('fileName')}  fileId={t.get('fileId')}")
-                continue
-            print(f"    {json.dumps(data)[:200]}")
+            # PDF/P8 probes
+            print(f"    acc={data.get('acc')}  status={data.get('status')}  len={data.get('len')}  is_pdf={data.get('is_pdf')}")
+            print(f"    ct={data.get('ct')}")
+            if data.get("is_pdf"):
+                print(f"    *** PDF CONFIRMED ***")
+            else:
+                t = data.get("preview_text", "")[:200]
+                if t:
+                    print(f"    text: {t}")
     await conn.close()
 
 asyncio.run(main())

@@ -181,8 +181,8 @@ async def _fetch_docket(
 
         data = await _post_with_retry(client, body)
 
-        batch = data.get("searchHits", [])
-        total = data.get("totalHits", 0)
+        batch = data.get("searchHits") or []  # API returns null for some dockets
+        total = data.get("totalHits") or 0
         items.extend(batch)
 
         logger.info("FercAdapter: docket=%s page=%d got=%d total=%d", docket, page, len(batch), total)

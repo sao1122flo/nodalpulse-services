@@ -1,4 +1,4 @@
-"""Diagnostic: sort order probe + transmittals for two colliding March-9 filings."""
+"""Probe File/DownloadP8File — the real FERC PDF endpoint (FileNet P8 CMS)."""
 import json
 import logging
 import httpx
@@ -6,109 +6,118 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _BASE = "https://elibrary.ferc.gov/eLibrarywebapi/api"
-_HEADERS = {
+
+# Browser-like headers (Referer required to bypass WAF)
+_HEADERS_BROWSER = {
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 NodalPulse/1.0 regulatory-monitor",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Origin": "https://elibrary.ferc.gov",
-    "Referer": "https://elibrary.ferc.gov/",
+    "Referer": "https://elibrary.ferc.gov/eLibrary/",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 
-_COLLISION_ACCS = ["20260309-5165", "20260309-5267"]
+# Known fileIds from prior probes
+_FILINGS = [
+    # acc, fileId, description
+    ("20260309-5165", "DB029976-B851-C94C-843A-9CD363100000", "EL25-49 PJM Informational Report"),
+    ("20260309-5267", "50147018-B7A1-CFF8-B59E-9CD43D100000", "EL25-49 PJM Answer"),
+    ("20260331-5252", "368A0776-4E35-CECD-B91D-9D44E9100000", "ER25-1357 ACP motion"),
+]
 
-
-def _search_body(docket=None, accession=None, page=1, results=5, sort_by=""):
-    return {
-        "searchText": "*",
-        "searchFullText": True,
-        "searchDescription": True,
-        "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}] if docket else [],
-        "dateSearches": [],
-        "affiliations": [],
-        "categories": [],
-        "libraries": [],
-        "classTypes": [],
-        "accessionNumber": accession,
-        "eFiling": False,
-        "resultsPerPage": results,
-        "curPage": page,
-        "groupBy": "NONE",
-        "sortBy": sort_by,
-        "allDates": True,
-    }
+# Known accession numbers for DownloadPDF test
+_ACCESSIONS = ["20260309-5165", "20260309-5267"]
 
 
 async def handle_diagnose_ferc(payload: dict) -> dict:
+    """Probe File/DownloadP8File with individual fileIds and DownloadPDF by accession."""
     out = {}
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
+    async with httpx.AsyncClient(
+        timeout=30,
+        follow_redirects=True,
+        headers=_HEADERS_BROWSER,
+    ) as client:
 
-        # === Sort order probe ===
-        # Fetch page 1 and page 2 of ER25-1357, check if page 1 has more recent dates
-        body_p1 = _search_body(docket="ER25-1357", page=1, results=3)
-        body_p2 = _search_body(docket="ER25-1357", page=2, results=3)
+        # First: GET the SPA to pick up any session cookies
+        try:
+            r = await client.get("https://elibrary.ferc.gov/eLibrary/",
+                                 headers={**_HEADERS_BROWSER, "Accept": "text/html,*/*"})
+            out["session_get"] = {
+                "status": r.status_code,
+                "cookies": dict(r.cookies),
+                "ct": r.headers.get("content-type", "?")[:50],
+            }
+            logger.info("session_get: status=%d cookies=%s", r.status_code, list(r.cookies.keys()))
+        except Exception as exc:
+            out["session_get"] = {"error": str(exc)[:100]}
 
-        r1 = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body_p1))
-        d1 = r1.json()
-        h1 = d1.get("searchHits", [])
-
-        r2 = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body_p2))
-        d2 = r2.json()
-        h2 = d2.get("searchHits", [])
-
-        out["sort_order"] = {
-            "totalHits": d1.get("totalHits"),
-            "page1_dates": [h.get("filedDate") for h in h1],
-            "page1_accs": [h.get("acesssionNumber") for h in h1],
-            "page2_dates": [h.get("filedDate") for h in h2],
-            "page2_accs": [h.get("acesssionNumber") for h in h2],
-        }
-        logger.info("sort_order: p1=%s p2=%s",
-                    [h.get("filedDate") for h in h1],
-                    [h.get("filedDate") for h in h2])
-
-        # Test sortBy="FILED_DATE" and sortBy="FILED_DATE_DESC"
-        for sort_val in ["FILED_DATE", "FILED_DATE_DESC", "filedDate", "filed_date"]:
-            body_sorted = _search_body(docket="ER25-1357", page=1, results=3, sort_by=sort_val)
+        # Probe DownloadP8File for each known fileId
+        for acc, file_id, desc in _FILINGS:
+            key = f"p8file_{acc}"
             try:
-                r = await client.post(f"{_BASE}/Search/AdvancedSearch",
-                                      content=json.dumps(body_sorted))
-                d = r.json()
-                h = d.get("searchHits", [])
-                out[f"sort_{sort_val}"] = {
+                body = {"fileidLst": [file_id]}
+                r = await client.post(
+                    f"{_BASE}/File/DownloadP8File",
+                    content=json.dumps(body),
+                )
+                content = r.content
+                out[key] = {
+                    "acc": acc,
+                    "fileId": file_id,
+                    "desc": desc,
                     "status": r.status_code,
-                    "dates": [x.get("filedDate") for x in h],
-                    "accs": [x.get("acesssionNumber") for x in h],
+                    "ct": r.headers.get("content-type", "?")[:80],
+                    "len": len(content),
+                    "is_pdf": content[:4] == b"%PDF",
+                    "preview_hex": content[:20].hex() if content else "",
+                    "preview_text": content[:100].decode("utf-8", errors="replace") if content else "",
                 }
-                logger.info("sort_%s: dates=%s", sort_val, [x.get("filedDate") for x in h])
+                logger.info("p8file_%s: status=%d len=%d is_pdf=%s", acc, r.status_code,
+                            len(content), content[:4] == b"%PDF")
             except Exception as exc:
-                out[f"sort_{sort_val}"] = {"error": str(exc)[:100]}
+                out[key] = {"acc": acc, "fileId": file_id, "error": str(exc)[:200]}
+                logger.warning("p8file_%s: %s", acc, exc)
 
-        # === Transmittals for both colliding filings ===
-        for acc in _COLLISION_ACCS:
+        # Probe DownloadPDF by accession (POST with body {"serverLocation": ""})
+        for acc in _ACCESSIONS:
+            key = f"pdf_acc_{acc}"
             try:
-                body = _search_body(accession=acc, results=1)
-                r = await client.post(f"{_BASE}/Search/AdvancedSearch",
-                                      content=json.dumps(body))
-                d = r.json()
-                hits = d.get("searchHits", [])
-                if hits:
-                    h = hits[0]
-                    transmittals = h.get("transmittals", [])
-                    out[f"acc_{acc}"] = {
-                        "status": r.status_code,
-                        "found_acc": h.get("acesssionNumber"),
-                        "filedDate": h.get("filedDate"),
-                        "description": h.get("description", "")[:120],
-                        "filer": next((a.get("affiliation") for a in h.get("affiliations", [])
-                                       if a.get("afType") == "AUTHOR"), None),
-                        "docketNumbers": h.get("docketNumbers", []),
-                        "transmittals": transmittals,  # full, no truncation
-                    }
-                else:
-                    out[f"acc_{acc}"] = {"status": r.status_code, "found": False}
-                logger.info("acc_%s: status=%d hits=%d", acc, r.status_code, len(hits))
+                r = await client.post(
+                    f"{_BASE}/File/DownloadPDF",
+                    params={"accessionNumber": acc},
+                    content=json.dumps({"serverLocation": ""}),
+                )
+                content = r.content
+                out[key] = {
+                    "acc": acc,
+                    "status": r.status_code,
+                    "ct": r.headers.get("content-type", "?")[:80],
+                    "len": len(content),
+                    "is_pdf": content[:4] == b"%PDF",
+                    "preview_text": content[:150].decode("utf-8", errors="replace") if content else "",
+                }
+                logger.info("pdf_acc_%s: status=%d len=%d is_pdf=%s", acc, r.status_code,
+                            len(content), content[:4] == b"%PDF")
             except Exception as exc:
-                out[f"acc_{acc}"] = {"error": str(exc)[:200]}
+                out[key] = {"acc": acc, "error": str(exc)[:200]}
+
+        # Probe filelist endpoint (HTML but might reveal correct download URL)
+        try:
+            r = await client.get(
+                "https://elibrary.ferc.gov/eLibrary/filelist",
+                params={"accession_number": "20260309-5165"},
+                headers={**_HEADERS_BROWSER, "Accept": "text/html,*/*"},
+            )
+            out["filelist"] = {
+                "status": r.status_code,
+                "ct": r.headers.get("content-type", "?")[:80],
+                "len": len(r.content),
+                "preview": r.text[:400],
+            }
+            logger.info("filelist: status=%d len=%d", r.status_code, len(r.content))
+        except Exception as exc:
+            out["filelist"] = {"error": str(exc)[:100]}
 
     return out
