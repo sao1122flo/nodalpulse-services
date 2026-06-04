@@ -565,23 +565,29 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
         if resp.content[:4] == b"%PDF":
             return resp.content
         # ZIP archive: FERC commonly packages order + dissent together.
-        # Extract the largest PDF inside.
+        # FERC ZIPs use extensionless filenames; identify PDFs by %PDF magic bytes.
         if resp.content[:2] == b"PK":
             import zipfile, io
             try:
                 zf = zipfile.ZipFile(io.BytesIO(resp.content))
-                pdfs = [(name, zf.getinfo(name).file_size) for name in zf.namelist()
-                        if name.lower().endswith(".pdf")]
+                pdfs = []
+                for name in zf.namelist():
+                    data = zf.read(name)
+                    if data[:4] == b"%PDF":
+                        pdfs.append((name, len(data), data))
                 if pdfs:
-                    best = max(pdfs, key=lambda x: x[1])[0]
-                    logger.info("DownloadP8File ZIP: extracted %s (%d bytes) from archive fileId=%s",
-                                best, zf.getinfo(best).file_size, file_id)
-                    return zf.read(best)
+                    best_name, best_size, best_data = max(pdfs, key=lambda x: x[1])
+                    logger.info("DownloadP8File ZIP: extracted '%s' (%d bytes) fileId=%s",
+                                best_name, best_size, file_id)
+                    return best_data
+                logger.warning("DownloadP8File ZIP no PDFs inside; entries=%s fileId=%s",
+                               zf.namelist(), file_id)
             except Exception as exc:
                 logger.warning("DownloadP8File ZIP extraction failed fileId=%s: %s", file_id, exc)
+            return b""
         # Truly unrecognized format
         logger.warning(
-            "DownloadP8File non-PDF/ZIP: status=%d len=%d head=%r fileId=%s",
+            "DownloadP8File non-PDF: status=%d len=%d head=%r fileId=%s",
             resp.status_code, len(resp.content), resp.content[:8], file_id,
         )
         return b""
