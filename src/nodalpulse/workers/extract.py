@@ -421,6 +421,9 @@ async def handle_extract(payload: dict) -> dict:
     elif ferc_file_id:
         logger.info("Filing %s: fetching PDF via FERC DownloadP8File fileId=%s", filing_id, ferc_file_id)
         content = await _fetch_ferc_p8file(ferc_file_id)
+        if not content:
+            logger.warning("Filing %s: DownloadP8File returned empty (auth error or non-PDF) — skipping", filing_id)
+            return {"filing_id": filing_id, "skipped": True, "reason": "ferc_p8file_unavailable"}
     else:
         logger.warning("Filing %s has no r2_key, no source_url, no ferc_file_id — skipping", filing_id)
         return {"filing_id": filing_id, "skipped": True, "reason": "no_content_source"}
@@ -549,12 +552,18 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
             _FERC_P8FILE_URL,
             content=_json_mod.dumps({"fileidLst": [file_id]}),
         )
+        if resp.status_code in (401, 403):
+            # Some FERC filings have access restrictions; skip gracefully
+            logger.warning("DownloadP8File auth error %d for fileId=%s — skipping", resp.status_code, file_id)
+            return b""
         resp.raise_for_status()
         if not resp.content or resp.content[:4] != b"%PDF":
-            raise RuntimeError(
-                f"DownloadP8File returned non-PDF: status={resp.status_code} "
-                f"len={len(resp.content)} head={resp.content[:20]!r}"
+            # ZIP, HTML, or other non-PDF — log and return empty
+            logger.warning(
+                "DownloadP8File non-PDF: status=%d len=%d head=%r fileId=%s",
+                resp.status_code, len(resp.content), resp.content[:8], file_id,
             )
+            return b""
         return resp.content
 
 

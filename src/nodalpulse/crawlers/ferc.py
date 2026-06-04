@@ -164,7 +164,7 @@ async def _fetch_docket(
             "dateSearches": [],
             "affiliations": [],
             "categories": [],
-            "libraries": [],
+            "libraries": ["Electric"],  # electric utility dockets only; avoids gas/oil pipeline noise
             "classTypes": [],
             "accessionNumber": None,
             "eFiling": False,
