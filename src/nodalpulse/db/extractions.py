@@ -24,6 +24,7 @@ async def get_filing(filing_id: str) -> dict | None:
                     f.external_id,
                     f.filed_at::text,
                     f.source_id::text,
+                    f.metadata::text AS metadata_json,
                     s.slug AS source_slug
                 FROM filings f
                 JOIN sources s ON s.id = f.source_id

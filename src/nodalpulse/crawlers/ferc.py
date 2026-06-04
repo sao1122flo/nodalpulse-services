@@ -6,13 +6,12 @@ per watched docket and emits normalized RawFiling objects.
 Replaces the defunct ecollection.ferc.gov/api/rssfeed (returned XBRL data,
 not tariff filings — zero useful hits since the adapter was built).
 
-PDF strategy by filer:
-- PJM own filings (AUTHOR affiliation == "PJM Interconnection, L.L.C.") →
-  source_url = pjm.com/-/media/DotCom/documents/ferc/filings/{year}/{transmittals[0].fileName}
-  (transmittals[].fileName is the authoritative filename PJM uploads to FERC — e.g.
-  "20260309-el25-49-000.pdf" or "20260309-el25-49-000 et al..pdf". Never guess.)
-- All others → source_url = ""; metadata["ferc_file_id"] carries transmittals[0].fileId
-  for DownloadFile+session fetch at extraction time (gating issue tracked in #64).
+PDF strategy (uniform for all filers):
+- source_url = "" at crawl time (deferred)
+- metadata["ferc_file_id"] = transmittals[0].fileId (unique per document)
+- At extraction time, extract.py calls POST /File/DownloadP8File (FileNet P8 CMS)
+  with {"fileidLst": [ferc_file_id]} after a GET /eLibrary/ for session cookies.
+  Confirmed working for PJM filings, FERC orders, and third-party interventions.
 
 Design decisions:
 - Multi-docket: docketNumbers[] list deduped after normalization → metadata["docket_numbers"]
@@ -56,9 +55,6 @@ _HEADERS = {
 # Must only match 0-prefixed 3-digit suffixes (000-099) so that dockets whose
 # sequence number is 3 digits (e.g. EL24-119) are NOT truncated.
 _SUB_DOCKET_RE = re.compile(r"-0\d{2}$")
-
-# PJM Interconnection filer string as it appears in the FERC API affiliations[]
-_PJM_FILER = "PJM Interconnection, L.L.C."
 
 # Ordered map: most-specific key first so "request for rehearing" beats "rehearing"
 _DOC_TYPE_MAP: dict[str, str] = {
@@ -231,22 +227,17 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
 
     description = item.get("description", "")
     filer = _get_author(item)
-    is_pjm = filer == _PJM_FILER
     transmittals = item.get("transmittals", [])
     ferc_file_id = transmittals[0].get("fileId", "") if transmittals else ""
-
-    # PDF source URL: PJM.com via authoritative transmittals[0].fileName
-    # (never guess the slug — two PJM docs on same day/docket have different names)
-    source_url = _pjm_pdf_url(item) if is_pjm else ""
 
     return RawFiling(
         source_slug="ferc",
         external_id=acc,
         doc_type=_infer_doc_type(item),
         title=description,
-        source_url=source_url,
+        source_url="",   # deferred — fetch at extraction via ferc_file_id + DownloadP8File
         filed_at=filed.isoformat() + "T00:00:00+00:00",
-        content=b"",   # deferred — R2 upload happens at extraction time
+        content=b"",     # deferred — R2 upload happens after triage at extraction time
         file_ext="pdf",
         metadata={
             "docket_numbers": docket_numbers,
@@ -256,7 +247,6 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
             "ferc_file_id": ferc_file_id,
             "ferc_file_name": transmittals[0].get("fileName", "") if transmittals else "",
             "ferc_accession": acc,
-            "is_pjm_filing": is_pjm,
         },
     )
 
@@ -283,29 +273,6 @@ def _get_author(item: dict) -> str | None:
             return aff.get("affiliation")
     return None
 
-
-def _pjm_pdf_url(item: dict) -> str:
-    """Construct the PJM.com PDF URL for a PJM-authored FERC filing.
-
-    Uses transmittals[0].fileName as the authoritative filename — the exact name
-    PJM uploads to FERC (e.g. "20260309-el25-49-000.pdf" or
-    "20260309-el25-49-000 et al..pdf"). Never guess: two PJM docs filed same-day
-    in the same docket can have different names; the guessed "-000" suffix would
-    collapse them to one URL.
-    """
-    filed = _parse_filed_date(item.get("filedDate", ""))
-    if not filed:
-        return ""
-    transmittals = item.get("transmittals", [])
-    if not transmittals:
-        return ""
-    file_name = transmittals[0].get("fileName", "")
-    if not file_name:
-        return ""
-    return (
-        f"https://www.pjm.com/-/media/DotCom/documents/ferc/filings"
-        f"/{filed.year}/{file_name}"
-    )
 
 
 def _infer_doc_type(item: dict) -> str:

@@ -401,14 +401,21 @@ async def handle_extract(payload: dict) -> dict:
     source_slug: str = filing.get("source_slug") or ""
     source_id: str | None = filing.get("source_id")
 
-    # Fetch bytes — from R2 if already materialized, else from source_url (deferred adapters).
+    import json as _json
+    _meta: dict = _json.loads(filing.get("metadata_json") or "{}")
+    ferc_file_id: str = _meta.get("ferc_file_id", "")
+
+    # Fetch bytes — priority: R2 (already uploaded) → source_url → FERC DownloadP8File.
     # Bandwidth-only until triage; R2 Class A write is deferred until after triage passes.
     if r2_key:
         content = r2.download(r2_key)
     elif source_url:
         content = await _fetch_source_url(source_url)
+    elif ferc_file_id:
+        logger.info("Filing %s: fetching PDF via FERC DownloadP8File fileId=%s", filing_id, ferc_file_id)
+        content = await _fetch_ferc_p8file(ferc_file_id)
     else:
-        logger.warning("Filing %s has no r2_key and no source_url — skipping", filing_id)
+        logger.warning("Filing %s has no r2_key, no source_url, no ferc_file_id — skipping", filing_id)
         return {"filing_id": filing_id, "skipped": True, "reason": "no_content_source"}
 
     text = _extract_text(content, file_ext)
@@ -501,6 +508,46 @@ async def _fetch_source_url(url: str) -> bytes:
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
+        return resp.content
+
+
+_FERC_ELIBRARY_BASE = "https://elibrary.ferc.gov"
+_FERC_P8FILE_URL = f"{_FERC_ELIBRARY_BASE}/eLibrarywebapi/api/File/DownloadP8File"
+_FERC_BROWSER_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Origin": _FERC_ELIBRARY_BASE,
+    "Referer": f"{_FERC_ELIBRARY_BASE}/eLibrary/",
+}
+
+import json as _json_mod
+
+
+async def _fetch_ferc_p8file(file_id: str) -> bytes:
+    """Download a FERC PDF via File/DownloadP8File (FileNet P8 CMS).
+
+    Requires a two-step flow: GET /eLibrary/ to get session cookies (F5 load-balancer
+    + TS security token), then POST DownloadP8File with {"fileidLst": [file_id]}.
+    """
+    async with httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=60,
+        headers=_FERC_BROWSER_HEADERS,
+    ) as client:
+        # Step 1: get session cookies
+        await client.get(f"{_FERC_ELIBRARY_BASE}/eLibrary/")
+        # Step 2: download PDF bytes
+        resp = await client.post(
+            _FERC_P8FILE_URL,
+            content=_json_mod.dumps({"fileidLst": [file_id]}),
+        )
+        resp.raise_for_status()
+        if not resp.content or resp.content[:4] != b"%PDF":
+            raise RuntimeError(
+                f"DownloadP8File returned non-PDF: status={resp.status_code} "
+                f"len={len(resp.content)} head={resp.content[:20]!r}"
+            )
         return resp.content
 
 
