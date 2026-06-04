@@ -1,4 +1,4 @@
-"""Temporary diagnostic: confirm date-filtered AdvancedSearch returns results."""
+"""Diagnostic: sort order probe + transmittals for two colliding March-9 filings."""
 import json
 import logging
 import httpx
@@ -14,98 +14,101 @@ _HEADERS = {
     "Referer": "https://elibrary.ferc.gov/",
 }
 
-# Known accession: 20260331-5252, filedDate: 03/31/2026, in ER25-1357 docket
-_DOCKET = "ER25-1357"
-_DATE_RANGE_WIDE = ("02-01-2026", "06-04-2026")  # should catch Mar 31 filing
-_DATE_RANGE_NARROW = ("03-01-2026", "04-01-2026")  # March only — must catch Mar 31
-_DATE_RANGE_MISS = ("05-01-2026", "06-03-2026")    # should return 0 (proven correct)
+_COLLISION_ACCS = ["20260309-5165", "20260309-5267"]
 
 
-def _make_body(docket, start, end, all_dates=False, search_text="*"):
+def _search_body(docket=None, accession=None, page=1, results=5, sort_by=""):
     return {
-        "searchText": search_text,
+        "searchText": "*",
         "searchFullText": True,
         "searchDescription": True,
-        "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}],
-        "dateSearches": [] if all_dates else [{"startDate": start, "endDate": end, "dateType": "Filed Date"}],
-        "affiliations": [], "categories": [], "libraries": [], "classTypes": [],
-        "accessionNumber": None, "eFiling": False,
-        "resultsPerPage": 10, "curPage": 1, "groupBy": "NONE", "sortBy": "",
-        "allDates": all_dates,
+        "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}] if docket else [],
+        "dateSearches": [],
+        "affiliations": [],
+        "categories": [],
+        "libraries": [],
+        "classTypes": [],
+        "accessionNumber": accession,
+        "eFiling": False,
+        "resultsPerPage": results,
+        "curPage": page,
+        "groupBy": "NONE",
+        "sortBy": sort_by,
+        "allDates": True,
     }
 
 
 async def handle_diagnose_ferc(payload: dict) -> dict:
-    """Targeted date-filter debug: ER25-1357 with multiple date ranges."""
     out = {}
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
 
-        # Control: allDates=True, should return ~116 items
-        body = _make_body(_DOCKET, None, None, all_dates=True)
-        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
-        data = r.json()
-        hits = data.get("searchHits", [])
-        out["control_all_dates"] = {
-            "status": r.status_code,
-            "totalHits": data.get("totalHits"),
-            "numHits": data.get("numHits"),
-            "items_in_batch": len(hits),
-            "first_acc": hits[0].get("acesssionNumber") if hits else None,
-            "first_filed": hits[0].get("filedDate") if hits else None,
-        }
-        logger.info("control_all_dates: totalHits=%s items=%d", data.get("totalHits"), len(hits))
+        # === Sort order probe ===
+        # Fetch page 1 and page 2 of ER25-1357, check if page 1 has more recent dates
+        body_p1 = _search_body(docket="ER25-1357", page=1, results=3)
+        body_p2 = _search_body(docket="ER25-1357", page=2, results=3)
 
-        # Test A: Feb-Jun 2026, should return Mar 31 filing
-        body = _make_body(_DOCKET, *_DATE_RANGE_WIDE, all_dates=False)
-        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
-        data = r.json()
-        hits = data.get("searchHits", [])
-        out["test_feb_jun_2026"] = {
-            "status": r.status_code,
-            "totalHits": data.get("totalHits"),
-            "items_in_batch": len(hits),
-            "first_acc": hits[0].get("acesssionNumber") if hits else None,
-            "first_filed": hits[0].get("filedDate") if hits else None,
-        }
-        logger.info("test_feb_jun_2026: totalHits=%s items=%d", data.get("totalHits"), len(hits))
+        r1 = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body_p1))
+        d1 = r1.json()
+        h1 = d1.get("searchHits", [])
 
-        # Test B: March 2026 only, should return Mar 31 filing
-        body = _make_body(_DOCKET, *_DATE_RANGE_NARROW, all_dates=False)
-        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
-        data = r.json()
-        hits = data.get("searchHits", [])
-        out["test_march_2026"] = {
-            "status": r.status_code,
-            "totalHits": data.get("totalHits"),
-            "items_in_batch": len(hits),
-            "first_acc": hits[0].get("acesssionNumber") if hits else None,
-            "first_filed": hits[0].get("filedDate") if hits else None,
-        }
-        logger.info("test_march_2026: totalHits=%s items=%d", data.get("totalHits"), len(hits))
+        r2 = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body_p2))
+        d2 = r2.json()
+        h2 = d2.get("searchHits", [])
 
-        # Test C: May-Jun 2026 (known-zero), sanity check
-        body = _make_body(_DOCKET, *_DATE_RANGE_MISS, all_dates=False)
-        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
-        data = r.json()
-        out["test_may_jun_2026_expect0"] = {
-            "status": r.status_code,
-            "totalHits": data.get("totalHits"),
-            "items_in_batch": len(data.get("searchHits", [])),
+        out["sort_order"] = {
+            "totalHits": d1.get("totalHits"),
+            "page1_dates": [h.get("filedDate") for h in h1],
+            "page1_accs": [h.get("acesssionNumber") for h in h1],
+            "page2_dates": [h.get("filedDate") for h in h2],
+            "page2_accs": [h.get("acesssionNumber") for h in h2],
         }
-        logger.info("test_may_jun_expect0: totalHits=%s", data.get("totalHits"))
+        logger.info("sort_order: p1=%s p2=%s",
+                    [h.get("filedDate") for h in h1],
+                    [h.get("filedDate") for h in h2])
 
-        # Test D: searchText="" instead of "*"
-        body = _make_body(_DOCKET, *_DATE_RANGE_WIDE, all_dates=False, search_text="")
-        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
-        data = r.json()
-        hits = data.get("searchHits", [])
-        out["test_empty_text_feb_jun"] = {
-            "status": r.status_code,
-            "totalHits": data.get("totalHits"),
-            "items_in_batch": len(hits),
-            "first_acc": hits[0].get("acesssionNumber") if hits else None,
-        }
-        logger.info("test_empty_text_feb_jun: totalHits=%s items=%d", data.get("totalHits"), len(hits))
+        # Test sortBy="FILED_DATE" and sortBy="FILED_DATE_DESC"
+        for sort_val in ["FILED_DATE", "FILED_DATE_DESC", "filedDate", "filed_date"]:
+            body_sorted = _search_body(docket="ER25-1357", page=1, results=3, sort_by=sort_val)
+            try:
+                r = await client.post(f"{_BASE}/Search/AdvancedSearch",
+                                      content=json.dumps(body_sorted))
+                d = r.json()
+                h = d.get("searchHits", [])
+                out[f"sort_{sort_val}"] = {
+                    "status": r.status_code,
+                    "dates": [x.get("filedDate") for x in h],
+                    "accs": [x.get("acesssionNumber") for x in h],
+                }
+                logger.info("sort_%s: dates=%s", sort_val, [x.get("filedDate") for x in h])
+            except Exception as exc:
+                out[f"sort_{sort_val}"] = {"error": str(exc)[:100]}
+
+        # === Transmittals for both colliding filings ===
+        for acc in _COLLISION_ACCS:
+            try:
+                body = _search_body(accession=acc, results=1)
+                r = await client.post(f"{_BASE}/Search/AdvancedSearch",
+                                      content=json.dumps(body))
+                d = r.json()
+                hits = d.get("searchHits", [])
+                if hits:
+                    h = hits[0]
+                    transmittals = h.get("transmittals", [])
+                    out[f"acc_{acc}"] = {
+                        "status": r.status_code,
+                        "found_acc": h.get("acesssionNumber"),
+                        "filedDate": h.get("filedDate"),
+                        "description": h.get("description", "")[:120],
+                        "filer": next((a.get("affiliation") for a in h.get("affiliations", [])
+                                       if a.get("afType") == "AUTHOR"), None),
+                        "docketNumbers": h.get("docketNumbers", []),
+                        "transmittals": transmittals,  # full, no truncation
+                    }
+                else:
+                    out[f"acc_{acc}"] = {"status": r.status_code, "found": False}
+                logger.info("acc_%s: status=%d hits=%d", acc, r.status_code, len(hits))
+            except Exception as exc:
+                out[f"acc_{acc}"] = {"error": str(exc)[:200]}
 
     return out
