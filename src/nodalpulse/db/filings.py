@@ -167,7 +167,12 @@ async def upsert_filing(
                     CAST(:filed_at AS timestamptz), :r2_key, :file_ext, :source_url,
                     CAST(:metadata AS jsonb), CAST(:docket_id AS uuid)
                 )
-                ON CONFLICT (source_id, external_id) DO NOTHING
+                ON CONFLICT (source_id, external_id) DO UPDATE SET
+                    source_url = EXCLUDED.source_url,
+                    metadata   = EXCLUDED.metadata
+                WHERE EXCLUDED.source_url != ''
+                  AND (filings.source_url IS NULL OR filings.source_url = ''
+                       OR filings.source_url != EXCLUDED.source_url)
                 RETURNING id::text
             """),
             {
