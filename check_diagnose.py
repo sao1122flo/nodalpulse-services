@@ -24,28 +24,24 @@ async def main():
             if data.get("error"):
                 print(f"    ERROR: {data['error']}")
                 continue
-            if data.get("skipped"):
-                print(f"    SKIPPED  p1_keys={data.get('p1_keys')}")
-                continue
-            # PDF probes
+            # PDF probe
             if "is_pdf" in data:
                 print(f"    status={data.get('status')}  is_pdf={data['is_pdf']}  len={data.get('len')}  ct={data.get('ct')}")
                 if data.get("preview"):
-                    print(f"    preview: {data['preview'][:200]}")
+                    print(f"    preview: {data['preview'][:150]}")
                 continue
-            # Affiliation probe
+            # Search probe
             if "totalHits" in data:
                 print(f"    status={data.get('status')}  totalHits={data.get('totalHits')}  items_count={data.get('items_count')}")
-                for i, (affils, dockets, desc) in enumerate(zip(
-                    data.get("first_3_affils", []),
-                    data.get("first_3_dockets", []),
-                    data.get("first_3_descriptions", []),
-                )):
-                    print(f"    [{i}] affils={affils}  dockets={dockets}")
-                    print(f"         desc: {desc[:100]}")
+                affils = data.get("first_3_affils", [])
+                dockets = data.get("first_3_dockets", [])
+                descs = data.get("first_3_desc", [])
+                for i in range(len(descs)):
+                    print(f"    [{i}] affils={affils[i] if i < len(affils) else '?'}")
+                    print(f"         dockets={dockets[i] if i < len(dockets) else '?'}")
+                    print(f"         desc: {descs[i][:100]}")
                 continue
-            # Generic
-            print(f"    {json.dumps(data)[:400]}")
+            print(f"    {json.dumps(data)[:300]}")
     await conn.close()
 
 asyncio.run(main())
