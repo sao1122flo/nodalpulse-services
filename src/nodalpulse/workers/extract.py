@@ -580,8 +580,12 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
                     logger.info("DownloadP8File ZIP: extracted '%s' (%d bytes) fileId=%s",
                                 best_name, best_size, file_id)
                     return best_data
-                logger.warning("DownloadP8File ZIP no PDFs inside; entries=%s fileId=%s",
-                               zf.namelist(), file_id)
+                # Check if it's a DOCX (Word document) — also a ZIP
+                if "word/document.xml" in zf.namelist():
+                    logger.info("DownloadP8File DOCX (Word) fileId=%s — returning raw for DOCX extraction", file_id)
+                    return resp.content  # _extract_text will handle via auto-detect
+                logger.warning("DownloadP8File ZIP no PDFs/DOCX; entries=%s fileId=%s",
+                               zf.namelist()[:5], file_id)
             except Exception as exc:
                 logger.warning("DownloadP8File ZIP extraction failed fileId=%s: %s", file_id, exc)
             return b""
@@ -613,7 +617,12 @@ async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict
 # ── text extraction helpers ───────────────────────────────────────────────────
 
 def _extract_text(content: bytes, file_ext: str) -> str:
-    if file_ext == "pdf":
+    if not content:
+        return ""
+    # Auto-detect by magic bytes (FERC may deliver DOCX despite file_ext='pdf')
+    if content[:2] == b"PK":
+        return _docx_text(content)
+    if file_ext == "pdf" or content[:4] == b"%PDF":
         return _pdf_text(content)
     if file_ext in ("html", "htm"):
         return HTMLParser(content.decode("utf-8", errors="replace")).text()[:60_000]
