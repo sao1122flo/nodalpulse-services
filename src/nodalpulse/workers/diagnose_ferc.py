@@ -1,4 +1,4 @@
-"""Temporary diagnostic: capture full transmittals + test fileName as URL."""
+"""Temporary diagnostic: confirm date-filtered AdvancedSearch returns results."""
 import json
 import logging
 import httpx
@@ -14,121 +14,98 @@ _HEADERS = {
     "Referer": "https://elibrary.ferc.gov/",
 }
 
-_SEARCH_DOCKET_ALL_DATES = {
-    "searchText": "*", "searchFullText": True, "searchDescription": True,
-    "docketSearches": [{"docketNumber": "ER25-1357", "subDocketNumbers": []}],
-    "dateSearches": [], "affiliations": [], "categories": [], "libraries": [],
-    "classTypes": [], "accessionNumber": None, "eFiling": False,
-    "resultsPerPage": 2, "curPage": 1, "groupBy": "NONE", "sortBy": "", "allDates": True,
-}
+# Known accession: 20260331-5252, filedDate: 03/31/2026, in ER25-1357 docket
+_DOCKET = "ER25-1357"
+_DATE_RANGE_WIDE = ("02-01-2026", "06-04-2026")  # should catch Mar 31 filing
+_DATE_RANGE_NARROW = ("03-01-2026", "04-01-2026")  # March only — must catch Mar 31
+_DATE_RANGE_MISS = ("05-01-2026", "06-03-2026")    # should return 0 (proven correct)
 
-# PJM filing discovery — text search in description, no quotes, no classType filter
-_SEARCH_PJM_TEXT = {
-    "searchText": "PJM Interconnection",
-    "searchFullText": False,
-    "searchDescription": True,
-    "docketSearches": [],
-    "dateSearches": [{"startDate": "05-01-2026", "endDate": "06-03-2026", "dateType": "Filed Date"}],
-    "affiliations": [], "categories": [], "libraries": ["Electric"],
-    "classTypes": [], "accessionNumber": None, "eFiling": False,
-    "resultsPerPage": 3, "curPage": 1, "groupBy": "NONE", "sortBy": "", "allDates": False,
-}
+
+def _make_body(docket, start, end, all_dates=False, search_text="*"):
+    return {
+        "searchText": search_text,
+        "searchFullText": True,
+        "searchDescription": True,
+        "docketSearches": [{"docketNumber": docket, "subDocketNumbers": []}],
+        "dateSearches": [] if all_dates else [{"startDate": start, "endDate": end, "dateType": "Filed Date"}],
+        "affiliations": [], "categories": [], "libraries": [], "classTypes": [],
+        "accessionNumber": None, "eFiling": False,
+        "resultsPerPage": 10, "curPage": 1, "groupBy": "NONE", "sortBy": "",
+        "allDates": all_dates,
+    }
 
 
 async def handle_diagnose_ferc(payload: dict) -> dict:
+    """Targeted date-filter debug: ER25-1357 with multiple date ranges."""
     out = {}
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True, headers=_HEADERS) as client:
 
-        # 1. Fetch item and capture FULL transmittals (no truncation)
-        try:
-            r = await client.post(f"{_BASE}/Search/AdvancedSearch",
-                                  content=json.dumps(_SEARCH_DOCKET_ALL_DATES))
-            data = r.json() if r.status_code == 200 else {}
-            hits = data.get("searchHits", [])
-            first = hits[0] if hits else {}
-            transmittals = first.get("transmittals", [])
-            out["full_transmittals"] = {
-                "status": r.status_code,
-                "acesssionNumber": first.get("acesssionNumber"),
-                "transmittals_count": len(transmittals),
-                "transmittals": transmittals,  # all fields, no truncation
-            }
-            logger.info("full_transmittals acc=%s transmittals=%d",
-                        first.get("acesssionNumber"), len(transmittals))
-        except Exception as exc:
-            out["full_transmittals"] = {"error": str(exc)[:200]}
+        # Control: allDates=True, should return ~116 items
+        body = _make_body(_DOCKET, None, None, all_dates=True)
+        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
+        data = r.json()
+        hits = data.get("searchHits", [])
+        out["control_all_dates"] = {
+            "status": r.status_code,
+            "totalHits": data.get("totalHits"),
+            "numHits": data.get("numHits"),
+            "items_in_batch": len(hits),
+            "first_acc": hits[0].get("acesssionNumber") if hits else None,
+            "first_filed": hits[0].get("filedDate") if hits else None,
+        }
+        logger.info("control_all_dates: totalHits=%s items=%d", data.get("totalHits"), len(hits))
 
-        # 2. Try fetching the first transmittal's fileName as a URL
-        transmittals = out.get("full_transmittals", {}).get("transmittals", [])
-        if transmittals:
-            t0 = transmittals[0]
-            file_name = t0.get("fileName", "")
-            file_id = t0.get("fileId", "")
-            # Check if fileName looks like a URL
-            if file_name.startswith("http"):
-                try:
-                    r = await client.get(file_name, headers={"Accept": "*/*"})
-                    out["transmittal_filename_url"] = {
-                        "url": file_name,
-                        "status": r.status_code,
-                        "ct": r.headers.get("content-type", "?")[:80],
-                        "len": len(r.content),
-                        "is_pdf": r.content[:4] == b"%PDF",
-                    }
-                except Exception as exc:
-                    out["transmittal_filename_url"] = {"url": file_name, "error": str(exc)[:200]}
-            else:
-                out["transmittal_filename_url"] = {"fileName": file_name, "is_url": False}
+        # Test A: Feb-Jun 2026, should return Mar 31 filing
+        body = _make_body(_DOCKET, *_DATE_RANGE_WIDE, all_dates=False)
+        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
+        data = r.json()
+        hits = data.get("searchHits", [])
+        out["test_feb_jun_2026"] = {
+            "status": r.status_code,
+            "totalHits": data.get("totalHits"),
+            "items_in_batch": len(hits),
+            "first_acc": hits[0].get("acesssionNumber") if hits else None,
+            "first_filed": hits[0].get("filedDate") if hits else None,
+        }
+        logger.info("test_feb_jun_2026: totalHits=%s items=%d", data.get("totalHits"), len(hits))
 
-            # Try DownloadFile with the fileId from transmittals
-            if file_id:
-                try:
-                    r = await client.get(
-                        f"{_BASE}/File/DownloadFile",
-                        params={"fileId": file_id},
-                        headers={**_HEADERS, "Accept": "application/pdf, */*"},
-                    )
-                    out["transmittal_fileid_pdf_accept"] = {
-                        "fileId": file_id,
-                        "status": r.status_code,
-                        "ct": r.headers.get("content-type", "?")[:80],
-                        "len": len(r.content),
-                        "is_pdf": r.content[:4] == b"%PDF",
-                        "preview": r.text[:100] if not r.content[:4] == b"%PDF" else None,
-                    }
-                    logger.info("transmittal_fileid_pdf_accept status=%d is_pdf=%s len=%d",
-                                r.status_code, r.content[:4] == b"%PDF", len(r.content))
-                except Exception as exc:
-                    out["transmittal_fileid_pdf_accept"] = {"error": str(exc)[:200]}
-        else:
-            out["transmittal_filename_url"] = {"skipped": "no transmittals"}
+        # Test B: March 2026 only, should return Mar 31 filing
+        body = _make_body(_DOCKET, *_DATE_RANGE_NARROW, all_dates=False)
+        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
+        data = r.json()
+        hits = data.get("searchHits", [])
+        out["test_march_2026"] = {
+            "status": r.status_code,
+            "totalHits": data.get("totalHits"),
+            "items_in_batch": len(hits),
+            "first_acc": hits[0].get("acesssionNumber") if hits else None,
+            "first_filed": hits[0].get("filedDate") if hits else None,
+        }
+        logger.info("test_march_2026: totalHits=%s items=%d", data.get("totalHits"), len(hits))
 
-        # 3. PJM text search in description (no quotes, no classType filter)
-        try:
-            r = await client.post(f"{_BASE}/Search/AdvancedSearch",
-                                  content=json.dumps(_SEARCH_PJM_TEXT))
-            data = r.json() if r.status_code == 200 else {}
-            hits = data.get("searchHits", [])
-            out["pjm_desc_search"] = {
-                "status": r.status_code,
-                "totalHits": data.get("totalHits"),
-                "numHits": data.get("numHits"),
-                "items_count": len(hits),
-                "first_3": [
-                    {
-                        "acc": h.get("acesssionNumber"),
-                        "filed": h.get("filedDate"),
-                        "dockets": h.get("docketNumbers", [])[:3],
-                        "affils": [a.get("affiliation") for a in h.get("affiliations", []) if a.get("afType") == "AUTHOR"],
-                        "desc": h.get("description", "")[:100],
-                    }
-                    for h in hits[:3]
-                ],
-            }
-            logger.info("pjm_desc_search totalHits=%s numHits=%s items=%d",
-                        data.get("totalHits"), data.get("numHits"), len(hits))
-        except Exception as exc:
-            out["pjm_desc_search"] = {"error": str(exc)[:200]}
+        # Test C: May-Jun 2026 (known-zero), sanity check
+        body = _make_body(_DOCKET, *_DATE_RANGE_MISS, all_dates=False)
+        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
+        data = r.json()
+        out["test_may_jun_2026_expect0"] = {
+            "status": r.status_code,
+            "totalHits": data.get("totalHits"),
+            "items_in_batch": len(data.get("searchHits", [])),
+        }
+        logger.info("test_may_jun_expect0: totalHits=%s", data.get("totalHits"))
+
+        # Test D: searchText="" instead of "*"
+        body = _make_body(_DOCKET, *_DATE_RANGE_WIDE, all_dates=False, search_text="")
+        r = await client.post(f"{_BASE}/Search/AdvancedSearch", content=json.dumps(body))
+        data = r.json()
+        hits = data.get("searchHits", [])
+        out["test_empty_text_feb_jun"] = {
+            "status": r.status_code,
+            "totalHits": data.get("totalHits"),
+            "items_in_batch": len(hits),
+            "first_acc": hits[0].get("acesssionNumber") if hits else None,
+        }
+        logger.info("test_empty_text_feb_jun: totalHits=%s items=%d", data.get("totalHits"), len(hits))
 
     return out
