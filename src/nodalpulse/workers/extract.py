@@ -522,7 +522,7 @@ async def handle_extract(payload: dict) -> dict:
             f"raw/{source_slug}/{date_parts[0]}/{date_parts[1]}/"
             f"{date_parts[2]}/{external_id}.{file_ext}"
         )
-        r2.upload(r2_key, content, _CONTENT_TYPES.get(file_ext, "application/octet-stream"))
+        await r2.upload_async(r2_key, content, _CONTENT_TYPES.get(file_ext, "application/octet-stream"))
         await update_filing_r2_key(filing_id, r2_key)
         logger.info("Materialized R2 for %s → %s", filing_id, r2_key)
 

@@ -1,3 +1,6 @@
+import asyncio
+import functools
+
 import boto3
 from botocore.client import BaseClient
 
@@ -26,6 +29,11 @@ def upload(key: str, body: bytes, content_type: str = "application/octet-stream"
         Body=body,
         ContentType=content_type,
     )
+
+
+async def upload_async(key: str, body: bytes, content_type: str = "application/octet-stream") -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, functools.partial(upload, key, body, content_type))
 
 
 def download(key: str) -> bytes:

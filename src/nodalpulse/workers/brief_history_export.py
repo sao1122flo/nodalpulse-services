@@ -94,7 +94,7 @@ async def handle_brief_history_export(payload: dict) -> dict:
 
     zip_bytes = _build_zip(briefs)
     zip_key = f"exports/{user_id}/brief-history-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.zip"
-    r2.upload(zip_key, zip_bytes, "application/zip")
+    await r2.upload_async(zip_key, zip_bytes, "application/zip")
 
     presigned_url = r2.get_client().generate_presigned_url(
         "get_object",

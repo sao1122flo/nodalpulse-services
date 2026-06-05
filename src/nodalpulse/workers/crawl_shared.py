@@ -82,7 +82,7 @@ async def run_adapter(adapter: MarketAdapter, source_slug: str, since: str | Non
             # store source_url and upload at extraction time to spare R2 Class A writes.
             persisted_r2_key: str | None = None
             if filing.content:
-                r2.upload(
+                await r2.upload_async(
                     r2_key,
                     filing.content,
                     _CONTENT_TYPES.get(filing.file_ext, "application/octet-stream"),
