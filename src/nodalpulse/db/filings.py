@@ -129,6 +129,24 @@ async def get_pjm_ferc_docket_set() -> set[str]:
         return {row[0] for row in result.fetchall()}
 
 
+async def get_all_tracked_docket_ids() -> set[str]:
+    """Return internal docket UUIDs tracked by any user across all sources.
+
+    Union of user_dockets junction + legacy user_profiles.tracked_docket_ids array.
+    Called once per crawl tick in selective mode to gate Sonnet extraction.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(text("""
+            SELECT DISTINCT docket_id::text FROM user_dockets
+            UNION
+            SELECT DISTINCT unnest(tracked_docket_ids)::text
+            FROM user_profiles
+            WHERE tracked_docket_ids IS NOT NULL
+              AND array_length(tracked_docket_ids, 1) > 0
+        """))
+        return {row[0] for row in result.fetchall() if row[0]}
+
+
 async def upsert_filing_dockets(
     filing_id: str,
     docket_ids: list[str],

@@ -5,14 +5,14 @@ import os
 from datetime import date, timedelta
 
 from nodalpulse.crawlers.base import MarketAdapter
-from nodalpulse.db.filings import find_or_create_docket, get_last_crawled_at, get_source_id, upsert_filing, upsert_filing_dockets
+from nodalpulse.db.filings import find_or_create_docket, get_all_tracked_docket_ids, get_last_crawled_at, get_source_id, upsert_filing, upsert_filing_dockets
 from nodalpulse.queue.pg_queue import enqueue
 from nodalpulse.storage import r2
 
 logger = logging.getLogger(__name__)
 
 MAX_LOOKBACK_DAYS = int(os.environ.get("WORKER_MAX_LOOKBACK_DAYS", "3"))
-EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "on-demand")
+EXTRACTION_MODE = os.environ.get("EXTRACTION_MODE", "selective")
 
 _CONTENT_TYPES = {
     "pdf": "application/pdf",
@@ -63,6 +63,12 @@ async def run_adapter(adapter: MarketAdapter, source_slug: str, since: str | Non
     filings = await adapter.fetch_new(since=effective_since)
     logger.info("run_adapter source=%s fetched=%d", source_slug, len(filings))
 
+    # Load tracked docket set once per tick; empty set means no extractions in selective mode.
+    tracked_set: set[str] = set()
+    if EXTRACTION_MODE == "selective":
+        tracked_set = await get_all_tracked_docket_ids()
+        logger.info("run_adapter selective: %d tracked dockets", len(tracked_set))
+
     saved = skipped = errors = 0
     for filing in filings:
         try:
@@ -110,7 +116,11 @@ async def run_adapter(adapter: MarketAdapter, source_slug: str, since: str | Non
             if filing_id:
                 if docket_ids:
                     await upsert_filing_dockets(filing_id, docket_ids)
-                if EXTRACTION_MODE == "proactive":
+                should_extract = (
+                    EXTRACTION_MODE == "proactive"
+                    or (EXTRACTION_MODE == "selective" and any(did in tracked_set for did in docket_ids))
+                )
+                if should_extract:
                     await enqueue(
                         "extract",
                         {

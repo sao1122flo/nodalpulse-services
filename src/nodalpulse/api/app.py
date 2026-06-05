@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="nodalpulse-services", version="0.1.0")
 
 _REFRESH_DOCKET_HOURLY_CAP = int(os.environ.get("REFRESH_DOCKET_USER_HOURLY_CAP", "30"))
-_REFRESH_DOCKET_MAX_FILINGS = int(os.environ.get("REFRESH_DOCKET_MAX_FILINGS_PER_PIN", "5"))
+_REFRESH_DOCKET_MAX_FILINGS = int(os.environ.get("REFRESH_DOCKET_MAX_FILINGS_PER_PIN", "15"))
 
 # TODO: support ERCOT source via explicit source param once ERCOT docket tracking ships
 _PUCT_SOURCE_ID = "0725032a-239f-475d-bdd5-251adad3ae05"
