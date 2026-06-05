@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     app_url: str = "https://app.nodalpulse.com"
 
     services_api_key: str = ""
+    lead_token_secret: str = ""  # HMAC secret for /public/lead tokens; set PUBLIC_LEAD_TOKEN_SECRET in Railway
 
     sentry_dsn: str = ""
     log_level: str = "INFO"

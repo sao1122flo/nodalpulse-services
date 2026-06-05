@@ -1,17 +1,25 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import logging
 import os
+import secrets
 import sys
+import time
 import uuid
+from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import text
 
 from nodalpulse.api.auth import verify_bearer
+from nodalpulse.settings import settings
 from nodalpulse.api.qna import QnaRequest, handle_qna
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
 from nodalpulse.db.engine import AsyncSessionLocal
@@ -23,6 +31,14 @@ from nodalpulse.zone_lookup import ilike_patterns_for_zones
 logger = logging.getLogger(__name__)
 app = FastAPI(title="nodalpulse-services", version="0.1.0")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://nodalpulse.com", "https://www.nodalpulse.com"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    allow_credentials=False,
+)
+
 _REFRESH_DOCKET_HOURLY_CAP = int(os.environ.get("REFRESH_DOCKET_USER_HOURLY_CAP", "30"))
 _REFRESH_DOCKET_MAX_FILINGS = int(os.environ.get("REFRESH_DOCKET_MAX_FILINGS_PER_PIN", "15"))
 
@@ -33,6 +49,344 @@ _PUCT_SOURCE_ID = "0725032a-239f-475d-bdd5-251adad3ae05"
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse({"status": "ok"})
+
+
+# ── public record endpoints (no auth, 0 LLM calls, whitelisted fields only) ──
+
+_VALID_MARKETS = frozenset({"puct", "caiso", "ferc", "pjm", "ercot-nprr", "ercot-mn"})
+
+# In-memory rate limiter for /public/lead: max 5 submissions per IP per 10 min
+_lead_ip_log: dict[str, list[float]] = defaultdict(list)
+_LEAD_RATE_LIMIT = 5
+_LEAD_RATE_WINDOW = 600
+
+
+def _check_lead_rate(ip: str) -> bool:
+    now = time.time()
+    _lead_ip_log[ip] = [t for t in _lead_ip_log[ip] if now - t < _LEAD_RATE_WINDOW]
+    if len(_lead_ip_log[ip]) >= _LEAD_RATE_LIMIT:
+        return False
+    _lead_ip_log[ip].append(now)
+    return True
+
+
+def _make_lead_token(email: str, secret: str) -> str:
+    """Stateless HMAC token; valid 24 h. No DB lookup needed on verify."""
+    expiry = int(time.time()) + 86400
+    payload = f"{email}:{expiry}"
+    sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}:{sig}".encode()).decode()
+
+
+def _verify_lead_token(token: str, secret: str) -> str | None:
+    """Returns the email if the token is valid and unexpired, else None."""
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode()).decode()
+        # structure: <email>:<expiry_unix>:<sha256_hex>
+        # split from right twice so emails containing ':' are handled correctly
+        last = decoded.rfind(":")
+        sig = decoded[last + 1:]
+        rest = decoded[:last]
+        second = rest.rfind(":")
+        expiry_str = rest[second + 1:]
+        email = rest[:second]
+        payload = f"{email}:{expiry_str}"
+        expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not secrets.compare_digest(sig, expected):
+            return None
+        if int(expiry_str) < int(time.time()):
+            return None
+        return email
+    except Exception:
+        return None
+
+
+_INDEX_MARKETS = ["puct", "caiso", "ferc", "pjm"]
+
+
+@app.get("/public/record/index")
+async def public_record_index() -> JSONResponse:
+    """Build manifest: (market, date) pairs that have ≥1 relevant extraction.
+
+    Used by the marketing site's getStaticPaths at build time.
+    Only pairs with real content are returned — avoids thin-content pages and
+    ensures URLs persist across rebuilds (corpus compounds, never 404s on old dates).
+    Zero LLM calls. No auth.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT
+                    s.slug            AS market,
+                    f.filed_at::date  AS date,
+                    COUNT(e.id)::int  AS item_count
+                FROM extractions e
+                JOIN filings f ON e.filing_id = f.id
+                JOIN sources s ON s.id = f.source_id
+                WHERE e.haiku_verdict = 'relevant'
+                  AND s.slug = ANY(:markets)
+                GROUP BY s.slug, f.filed_at::date
+                HAVING COUNT(e.id) >= 1
+                ORDER BY date DESC, market
+            """),
+            {"markets": _INDEX_MARKETS},
+        )
+        rows = result.mappings().all()
+
+    return JSONResponse([
+        {"market": r["market"], "date": str(r["date"]), "item_count": r["item_count"]}
+        for r in rows
+    ])
+
+
+@app.get("/public/record")
+async def public_record(
+    market: str,
+    day: str = Query(alias="date"),
+) -> JSONResponse:
+    """Teaser for a market+date record page.
+
+    Returns filing count (breadth), up to 3 headline items already extracted
+    with haiku_verdict='relevant', and total deadline count across those items.
+    Safe fields only — no PII, no user tracking, no raw payload dump.
+    Zero LLM calls.
+    """
+    if market not in _VALID_MARKETS:
+        return JSONResponse({"error": "unknown market"}, status_code=400)
+    try:
+        record_date = date.fromisoformat(day)
+    except ValueError:
+        return JSONResponse({"error": "invalid date"}, status_code=400)
+
+    day_start = datetime.combine(record_date, datetime.min.time()).replace(tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    params: dict = {"market": market, "day_start": day_start, "day_end": day_end}
+
+    async with AsyncSessionLocal() as session:
+        count_row = await session.execute(
+            text("""
+                SELECT COUNT(*) FROM filings f
+                JOIN sources s ON s.id = f.source_id
+                WHERE s.slug = :market
+                  AND f.filed_at >= :day_start
+                  AND f.filed_at < :day_end
+            """),
+            params,
+        )
+        filing_count = int(count_row.scalar_one())
+
+        items_rows = await session.execute(
+            text("""
+                SELECT
+                    f.title,
+                    f.source_url,
+                    f.filed_at,
+                    d.external_id              AS docket_number,
+                    e.payload->>'summary'      AS summary,
+                    e.payload->'key_points'    AS key_points
+                FROM extractions e
+                JOIN filings f ON e.filing_id = f.id
+                JOIN sources s ON s.id = f.source_id
+                LEFT JOIN dockets d ON d.id = f.docket_id
+                WHERE s.slug = :market
+                  AND f.filed_at >= :day_start
+                  AND f.filed_at < :day_end
+                  AND e.haiku_verdict = 'relevant'
+                ORDER BY f.filed_at DESC
+                LIMIT 3
+            """),
+            params,
+        )
+        item_rows = items_rows.mappings().all()
+
+        deadline_row = await session.execute(
+            text("""
+                SELECT COALESCE(SUM(jsonb_array_length(e.payload->'deadlines')), 0)
+                FROM extractions e
+                JOIN filings f ON e.filing_id = f.id
+                JOIN sources s ON s.id = f.source_id
+                WHERE s.slug = :market
+                  AND f.filed_at >= :day_start
+                  AND f.filed_at < :day_end
+                  AND e.haiku_verdict = 'relevant'
+                  AND e.payload ? 'deadlines'
+            """),
+            params,
+        )
+        deadline_count = int(deadline_row.scalar_one() or 0)
+
+    items = [
+        {
+            "title": r["title"],
+            "source_url": r["source_url"],
+            "filed_at": r["filed_at"].isoformat() if r["filed_at"] else None,
+            "docket_number": r["docket_number"],
+            "summary": r["summary"],
+            "key_points": (r["key_points"] or [])[:2],
+        }
+        for r in item_rows
+    ]
+
+    return JSONResponse({
+        "market": market,
+        "date": day,
+        "filing_count": filing_count,
+        "items": items,
+        "deadline_count": deadline_count,
+    })
+
+
+class LeadRequest(BaseModel):
+    email: str
+    name: str
+    title: str                  # job title / cargo
+    market: str | None = None
+    record_date: str | None = None
+    website: str = ""           # honeypot — bots fill this; humans leave it blank
+
+
+@app.post("/public/lead")
+async def capture_lead(body: LeadRequest, request: Request) -> JSONResponse:
+    """Capture email+name+title and return a 24-h HMAC token for /public/record/depth.
+
+    Anti-spam: honeypot field + per-IP rate limit (5 / 10 min).
+    The lead is upserted by email — re-submission updates name/title but keeps
+    the original captured_at via the UNIQUE constraint semantics.
+    """
+    if body.website:
+        # Honeypot triggered — silently succeed so bots think they won
+        return JSONResponse({"ok": True, "token": ""})
+
+    client_ip = (request.client.host if request.client else "unknown")
+    if not _check_lead_rate(client_ip):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429)
+
+    email = body.email.lower().strip()
+    name = body.name.strip()
+    title = body.title.strip()
+
+    if "@" not in email or len(email) < 3:
+        return JSONResponse({"error": "invalid_email"}, status_code=400)
+    if not name:
+        return JSONResponse({"error": "name_required"}, status_code=400)
+    if not title:
+        return JSONResponse({"error": "title_required"}, status_code=400)
+
+    secret = settings.lead_token_secret
+    if not secret:
+        logger.error("lead_token_secret not configured — /public/lead disabled")
+        return JSONResponse({"error": "server_error"}, status_code=500)
+
+    parsed_record_date: date | None = None
+    if body.record_date:
+        try:
+            parsed_record_date = date.fromisoformat(body.record_date)
+        except ValueError:
+            pass
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text("""
+                INSERT INTO leads (email, name, title, market, record_date)
+                VALUES (:email, :name, :title, :market, :record_date)
+                ON CONFLICT (email) DO UPDATE
+                    SET name        = EXCLUDED.name,
+                        title       = EXCLUDED.title,
+                        market      = COALESCE(EXCLUDED.market, leads.market),
+                        record_date = COALESCE(EXCLUDED.record_date, leads.record_date)
+            """),
+            {
+                "email": email,
+                "name": name,
+                "title": title,
+                "market": body.market,
+                "record_date": parsed_record_date,
+            },
+        )
+        await session.commit()
+
+    token = _make_lead_token(email, secret)
+    logger.info("lead captured: email=%s market=%s", email, body.market)
+    return JSONResponse({"ok": True, "token": token})
+
+
+@app.get("/public/record/depth")
+async def public_record_depth(
+    market: str,
+    day: str = Query(alias="date"),
+    token: str = "",
+) -> JSONResponse:
+    """Gated depth for a market+date. Requires a valid lead token from /public/lead.
+
+    Returns all deadlines/parties/$ for already-extracted relevant filings.
+    Whitelisted payload fields only — no raw payload dump, no user PII.
+    Zero LLM calls. Returns 401 without a valid token (cannot be scraped).
+    """
+    secret = settings.lead_token_secret
+    if not secret:
+        return JSONResponse({"error": "server_error"}, status_code=500)
+
+    email = _verify_lead_token(token, secret)
+    if not email:
+        return JSONResponse({"error": "token_required"}, status_code=401)
+
+    if market not in _VALID_MARKETS:
+        return JSONResponse({"error": "unknown market"}, status_code=400)
+    try:
+        record_date = date.fromisoformat(day)
+    except ValueError:
+        return JSONResponse({"error": "invalid date"}, status_code=400)
+
+    day_start = datetime.combine(record_date, datetime.min.time()).replace(tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+
+    async with AsyncSessionLocal() as session:
+        rows_result = await session.execute(
+            text("""
+                SELECT
+                    f.title,
+                    f.source_url,
+                    f.filed_at,
+                    f.filer,
+                    d.external_id                   AS docket_number,
+                    e.payload->>'summary'            AS summary,
+                    e.payload->>'relief_requested'   AS relief_requested,
+                    e.payload->>'outcome'            AS outcome,
+                    e.payload->>'effective_date'     AS effective_date,
+                    e.payload->'key_points'          AS key_points,
+                    e.payload->'deadlines'           AS deadlines
+                FROM extractions e
+                JOIN filings f ON e.filing_id = f.id
+                JOIN sources s ON s.id = f.source_id
+                LEFT JOIN dockets d ON d.id = f.docket_id
+                WHERE s.slug = :market
+                  AND f.filed_at >= :day_start
+                  AND f.filed_at < :day_end
+                  AND e.haiku_verdict = 'relevant'
+                ORDER BY f.filed_at DESC
+            """),
+            {"market": market, "day_start": day_start, "day_end": day_end},
+        )
+        rows = rows_result.mappings().all()
+
+    items = [
+        {
+            "title": r["title"],
+            "source_url": r["source_url"],
+            "filed_at": r["filed_at"].isoformat() if r["filed_at"] else None,
+            "filer": r["filer"],
+            "docket_number": r["docket_number"],
+            "summary": r["summary"],
+            "relief_requested": r["relief_requested"],
+            "outcome": r["outcome"],
+            "effective_date": r["effective_date"],
+            "key_points": r["key_points"] or [],
+            "deadlines": r["deadlines"] or [],
+        }
+        for r in rows
+    ]
+
+    return JSONResponse({"market": market, "date": day, "items": items})
 
 
 # ── email endpoints ───────────────────────────────────────────────────────────

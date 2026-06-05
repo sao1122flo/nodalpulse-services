@@ -370,9 +370,11 @@ def build_quiet_day_html(
     corpus_count: int,
     app_url: str,
     unsubscribe_url: str,
+    record_url: str = "",
 ) -> str:
     date_str = brief_date.strftime("%A, %B %-d, %Y")
     filing_word = "filing" if corpus_count == 1 else "filings"
+    view_url = record_url or f"{app_url}/dashboard"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -397,7 +399,7 @@ def build_quiet_day_html(
       </p>
     </div>
     <div class="footer">
-      <a href="{app_url}/dashboard">View in app</a>
+      <a href="{view_url}">View filing record</a>
       &nbsp;&middot;&nbsp;
       <a href="{unsubscribe_url}">Unsubscribe</a>
       &nbsp;&middot;&nbsp;

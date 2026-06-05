@@ -34,6 +34,9 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
+
+from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.db.market_events import get_market_events
 from nodalpulse.db.briefs import (
     check_eval_gate,
@@ -490,6 +493,71 @@ def dedup_candidates(filings: list[dict]) -> list[dict]:
     return result
 
 
+# ── quiet-day record URL helper ───────────────────────────────────────────────
+
+# Map saved-search market slugs (user-facing) → DB source slugs
+_QD_SLUG_MAP: dict[str, str] = {
+    "texas":       "puct",
+    "california":  "caiso",
+    "pjm":         "pjm",
+    "imm":         "pjm",
+    "ferc":        "ferc",
+}
+# Canonical record-page markets (must match _INDEX_MARKETS in app.py)
+_QD_INDEX_SOURCES: frozenset[str] = frozenset({"puct", "caiso", "ferc", "pjm"})
+# Market landing pages (always valid fallback)
+_QD_LANDING: dict[str, str] = {
+    "puct":       "https://nodalpulse.com/texas",
+    "ercot-nprr": "https://nodalpulse.com/texas",
+    "ercot-mn":   "https://nodalpulse.com/texas",
+    "caiso":      "https://nodalpulse.com/california",
+    "ferc":       "https://nodalpulse.com/pjm",
+    "pjm":        "https://nodalpulse.com/pjm",
+}
+
+
+async def _best_record_url(market_slug: str, brief_date: date) -> str:
+    """Return the best available public record URL for the quiet-day email.
+
+    Priority order:
+    1. /record/{source}/{brief_date} if that (market, date) has relevant content
+    2. /record/{source}/{latest_date} — most recent date with content for the market
+    3. Market landing page — always valid
+
+    Handles the mapping from saved-search slugs ('pjm') to DB source slugs ('pjm')
+    so the URL is always coherent with what was actually indexed.
+    """
+    source_slug = _QD_SLUG_MAP.get(market_slug, market_slug)
+
+    if source_slug not in _QD_INDEX_SOURCES:
+        return _QD_LANDING.get(source_slug, "https://nodalpulse.com")
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT f.filed_at::date AS date
+                FROM extractions e
+                JOIN filings f ON e.filing_id = f.id
+                JOIN sources s ON s.id = f.source_id
+                WHERE e.haiku_verdict = 'relevant'
+                  AND s.slug = :slug
+                  AND f.filed_at::date <= :date
+                GROUP BY f.filed_at::date
+                HAVING COUNT(e.id) >= 1
+                ORDER BY date DESC
+                LIMIT 1
+            """),
+            {"slug": source_slug, "date": brief_date},
+        )
+        row = result.first()
+
+    if row:
+        best = str(row[0])[:10]
+        return f"https://nodalpulse.com/record/{source_slug}/{best}"
+
+    return _QD_LANDING.get(source_slug, "https://nodalpulse.com")
+
+
 # ── main handler ──────────────────────────────────────────────────────────────
 
 async def handle_compose_brief(payload: dict) -> dict:
@@ -575,16 +643,19 @@ async def handle_compose_brief(payload: dict) -> dict:
             logger.info(
                 "compose-brief quiet-day (zero predicate matches) user=%s", user_id
             )
+            _primary_market = bundle.market_slugs[0] if bundle.market_slugs else "puct"
+            _record_url = await _best_record_url(_primary_market, brief_date)
             html = build_quiet_day_html(
                 brief_date=brief_date,
                 corpus_count=0,
                 app_url=settings.app_url,
                 unsubscribe_url=unsubscribe_url,
+                record_url=_record_url,
             )
             text_body = (
                 f"Quiet day {brief_date}. "
                 "0 items match your filters. "
-                f"https://nodalpulse.com/digest/{brief_date.isoformat()}"
+                f"{_record_url}"
             )
             await send_email(
                 to_email=user["email"],
@@ -611,16 +682,18 @@ async def handle_compose_brief(payload: dict) -> dict:
         total_corpus = len(filings)
 
         if not filings:
+            _record_url = await _best_record_url("puct", brief_date)
             html = build_quiet_day_html(
                 brief_date=brief_date,
                 corpus_count=0,
                 app_url=settings.app_url,
                 unsubscribe_url=unsubscribe_url,
+                record_url=_record_url,
             )
             text_body = (
                 f"Quiet day {brief_date}. "
                 "No filings in window. "
-                f"https://nodalpulse.com/digest/{brief_date.isoformat()}"
+                f"{_record_url}"
             )
             await send_email(
                 to_email=user["email"],
@@ -937,8 +1010,8 @@ async def handle_compose_brief(payload: dict) -> dict:
     date_path = brief_date.strftime("%Y/%m/%d")
     html_key = f"briefs/{user_id}/{date_path}/brief.html"
     txt_key = f"briefs/{user_id}/{date_path}/brief.txt"
-    r2.upload(html_key, html.encode("utf-8"), "text/html; charset=utf-8")
-    r2.upload(txt_key, text_content.encode("utf-8"), "text/plain; charset=utf-8")
+    await r2.upload_async(html_key, html.encode("utf-8"), "text/html; charset=utf-8")
+    await r2.upload_async(txt_key, text_content.encode("utf-8"), "text/plain; charset=utf-8")
 
     # Persist brief row
     brief_id = await insert_brief(
