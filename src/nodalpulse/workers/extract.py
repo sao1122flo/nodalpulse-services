@@ -32,7 +32,22 @@ _CONTENT_TYPES: dict[str, str] = {
     "html": "text/html",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "txt":  "text/plain",
+    "zip":  "application/zip",
 }
+
+# ZIP extraction guards — PUCT is a government source, not adversarial input,
+# but defense-in-depth prevents runaway memory on unusually large filings.
+_ZIP_MAX_ENTRIES = 100
+_ZIP_MAX_UNCOMPRESSED = 200_000_000  # 200 MB total across all entries
+
+# Extensions that carry no extractable text (GIS shapefiles, images, spreadsheets).
+# Allowlist approach: only pdf/docx/txt are extracted; everything else skipped.
+_ZIP_SKIP_EXTS = frozenset({
+    "shp", "dbf", "prj", "sbn", "sbx", "shx", "cpg",
+    "xlsx", "xls", "csv",
+    "png", "jpg", "jpeg", "gif", "tif", "tiff", "bmp",
+    "zip", "7z", "rar",
+})
 
 _TRIAGE_SYSTEM = """\
 You are a document relevance classifier for US electricity market regulation.
@@ -708,6 +723,11 @@ async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict
 def _extract_text(content: bytes, file_ext: str) -> str:
     if not content:
         return ""
+    # Explicit ZIP check first: PUCT sets file_ext="zip" via _ext_from_url.
+    # Must precede the PK magic check — DOCX is also a ZIP (PK bytes) but
+    # PUCT ZIPs contain PDFs/DOCXs, not word/document.xml.
+    if file_ext == "zip":
+        return _zip_text(content)
     # Auto-detect by magic bytes (FERC may deliver DOCX despite file_ext='pdf')
     if content[:2] == b"PK":
         return _docx_text(content)
@@ -779,6 +799,57 @@ def _docx_text(content: bytes) -> str:
                 tree = ET.parse(f)
         texts = [node.text for node in tree.findall(".//w:t", ns) if node.text]
         return " ".join(texts)[:60_000]
+    except Exception:
+        return ""
+
+
+def _zip_text(content: bytes) -> str:
+    """Extract text from a ZIP archive containing PDFs/DOCXs/TXTs (e.g. PUCT filings).
+
+    Enumerates entries, extracts text from each supported type, and concatenates
+    with === filename === separators. Skips shapefile components, images, and
+    spreadsheets. Returns "" on corrupt/empty/unsupported archives (graceful no_text).
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as z:
+            entries = z.infolist()
+            if not entries:
+                return ""
+            if len(entries) > _ZIP_MAX_ENTRIES:
+                logger.warning("ZIP has %d entries (>%d guard) — skipping", len(entries), _ZIP_MAX_ENTRIES)
+                return ""
+            total_size = sum(e.file_size for e in entries)
+            if total_size > _ZIP_MAX_UNCOMPRESSED:
+                logger.warning("ZIP uncompressed size %d bytes (>%d guard) — skipping", total_size, _ZIP_MAX_UNCOMPRESSED)
+                return ""
+
+            parts: list[str] = []
+            for e in entries:
+                name = e.filename
+                name_lower = name.lower()
+                ext = name_lower.rsplit(".", 1)[-1] if "." in name_lower else ""
+                if ext in _ZIP_SKIP_EXTS:
+                    continue
+                try:
+                    entry_bytes = z.read(name)
+                except Exception:
+                    continue
+                if not entry_bytes:
+                    continue
+                # Dispatch by extension then magic bytes
+                if ext == "pdf" or entry_bytes[:4] == b"%PDF":
+                    text = _pdf_text(entry_bytes)
+                elif ext == "docx" or entry_bytes[:2] == b"PK":
+                    text = _docx_text(entry_bytes)
+                elif ext == "txt":
+                    text = entry_bytes.decode("utf-8", errors="replace")[:60_000]
+                else:
+                    continue
+                if text.strip():
+                    basename = name.rsplit("/", 1)[-1]
+                    parts.append(f"=== {basename} ===\n{text}")
+
+            return "\n\n".join(parts)[:60_000]
     except Exception:
         return ""
 
