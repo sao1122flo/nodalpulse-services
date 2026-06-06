@@ -12,7 +12,31 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
+from nodalpulse.crawlers.base import RawFiling
 from nodalpulse.llm.client import CreditExhaustedError
+
+
+def _puct_deferred_filing() -> RawFiling:
+    """Return a deferred PUCT RawFiling (content=b'') as produced by the new crawler."""
+    return RawFiling(
+        source_slug="puct",
+        external_id="abc123",
+        doc_type="puct-order",
+        title="Test Order — 59475",
+        source_url="https://interchange.puc.texas.gov/Documents/59475_1_1234567.PDF",
+        filed_at="2026-05-12T00:00:00+00:00",
+        content=b"",  # deferred — extract worker fetches post-triage
+        file_ext="pdf",
+        metadata={
+            "control_number": "59475",
+            "item_number": "1",
+            "item_key": "59475_1",
+            "item_type": "",
+            "item_type_raw": "",
+            "description_raw": "",
+            "party": "",
+        },
+    )
 
 
 # ── A: EXTRACTION_MODE gate ───────────────────────────────────────────────────
@@ -22,20 +46,9 @@ class TestExtractionModeGatePuct:
 
     @pytest.mark.asyncio
     async def test_on_demand_skips_extract_enqueue(self):
-        """EXTRACTION_MODE=on-demand (default): saved filing does not produce extract job."""
-        mock_filing = MagicMock()
-        mock_filing.filed_at = "2026-05-12T00:00:00"
-        mock_filing.file_ext = "pdf"
-        mock_filing.doc_type = "order"
-        mock_filing.external_id = "abc123"
-        mock_filing.metadata = {"control_number": "59475"}
-
-        async def fake_get_rows(since=None):
-            return [{"external_id": "abc123"}]
-
+        """EXTRACTION_MODE=on-demand: saved deferred filing does not produce extract job."""
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
-        mock_crawler._download_filing = AsyncMock(return_value=mock_filing)
+        mock_crawler.fetch_new = AsyncMock(return_value=[_puct_deferred_filing()])
 
         captured_enqueues = []
 
@@ -44,14 +57,15 @@ class TestExtractionModeGatePuct:
             return "job-id"
 
         with (
-            patch("nodalpulse.workers.crawl.get_last_crawled_at", return_value="2026-05-11"),
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", AsyncMock(return_value="2026-05-11")),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", AsyncMock(return_value="src-uuid")),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.find_or_create_docket", AsyncMock(return_value="docket-uuid")),
-            patch("nodalpulse.workers.crawl.upsert_filing", AsyncMock(return_value="filing-uuid")),
-            patch("nodalpulse.workers.crawl.r2.upload"),
-            patch("nodalpulse.workers.crawl.enqueue", fake_enqueue),
-            patch("nodalpulse.workers.crawl.EXTRACTION_MODE", "on-demand"),
+            patch("nodalpulse.workers.crawl_shared.find_or_create_docket", AsyncMock(return_value="docket-uuid")),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing", AsyncMock(return_value="filing-uuid")),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing_dockets", AsyncMock()),
+            patch("nodalpulse.workers.crawl_shared.get_all_tracked_docket_ids", AsyncMock(return_value=set())),
+            patch("nodalpulse.workers.crawl_shared.enqueue", fake_enqueue),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             result = await handle_crawl_puct({})
@@ -63,20 +77,9 @@ class TestExtractionModeGatePuct:
 
     @pytest.mark.asyncio
     async def test_proactive_enqueues_extract(self):
-        """EXTRACTION_MODE=proactive: saved filing enqueues an extract job."""
-        mock_filing = MagicMock()
-        mock_filing.filed_at = "2026-05-12T00:00:00"
-        mock_filing.file_ext = "pdf"
-        mock_filing.doc_type = "order"
-        mock_filing.external_id = "abc123"
-        mock_filing.metadata = {"control_number": "59475"}
-
-        async def fake_get_rows(since=None):
-            return [{"external_id": "abc123"}]
-
+        """EXTRACTION_MODE=proactive: saved deferred filing enqueues an extract job."""
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
-        mock_crawler._download_filing = AsyncMock(return_value=mock_filing)
+        mock_crawler.fetch_new = AsyncMock(return_value=[_puct_deferred_filing()])
 
         captured_enqueues = []
 
@@ -85,14 +88,15 @@ class TestExtractionModeGatePuct:
             return "job-id"
 
         with (
-            patch("nodalpulse.workers.crawl.get_last_crawled_at", return_value="2026-05-11"),
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", AsyncMock(return_value="2026-05-11")),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", AsyncMock(return_value="src-uuid")),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.find_or_create_docket", AsyncMock(return_value="docket-uuid")),
-            patch("nodalpulse.workers.crawl.upsert_filing", AsyncMock(return_value="filing-uuid")),
-            patch("nodalpulse.workers.crawl.r2.upload"),
-            patch("nodalpulse.workers.crawl.enqueue", fake_enqueue),
-            patch("nodalpulse.workers.crawl.EXTRACTION_MODE", "proactive"),
+            patch("nodalpulse.workers.crawl_shared.find_or_create_docket", AsyncMock(return_value="docket-uuid")),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing", AsyncMock(return_value="filing-uuid")),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing_dockets", AsyncMock()),
+            patch("nodalpulse.workers.crawl_shared.get_all_tracked_docket_ids", AsyncMock(return_value=set())),
+            patch("nodalpulse.workers.crawl_shared.enqueue", fake_enqueue),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "proactive"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             result = await handle_crawl_puct({})

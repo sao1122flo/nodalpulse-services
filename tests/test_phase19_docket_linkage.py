@@ -181,66 +181,75 @@ class TestCrawlPuctDocketWiring:
     @pytest.mark.asyncio
     async def test_find_or_create_docket_called_with_control_number(self):
         """Crawl handler extracts control_number from metadata and calls find_or_create_docket."""
-        mock_filing = MagicMock()
-        mock_filing.filed_at = "2026-05-12T00:00:00"
-        mock_filing.file_ext = "pdf"
-        mock_filing.doc_type = "puct-order"
-        mock_filing.external_id = "59475_1_99999"
-        mock_filing.metadata = {"control_number": "59475", "item_number": "1"}
+        from nodalpulse.crawlers.base import RawFiling
 
-        async def fake_get_rows(since=None):
-            return [{"external_id": "59475_1_99999"}]
+        mock_filing = RawFiling(
+            source_slug="puct",
+            external_id="59475_1_99999",
+            doc_type="puct-order",
+            title="Test — 59475",
+            source_url="https://interchange.puc.texas.gov/Documents/59475_1_99999.PDF",
+            filed_at="2026-05-12T00:00:00+00:00",
+            content=b"",  # deferred
+            file_ext="pdf",
+            metadata={"control_number": "59475", "item_number": "1", "item_key": "59475_1",
+                      "item_type": "", "item_type_raw": "", "description_raw": "", "party": ""},
+        )
 
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
-        mock_crawler._download_filing = AsyncMock(return_value=mock_filing)
+        mock_crawler.fetch_new = AsyncMock(return_value=[mock_filing])
 
         mock_find = AsyncMock(return_value="docket-uuid-59475")
         mock_upsert = AsyncMock(return_value="filing-uuid")
 
         with (
-            patch("nodalpulse.workers.crawl.get_last_crawled_at", return_value="2026-05-11"),
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", AsyncMock(return_value="2026-05-11")),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", AsyncMock(return_value="src-uuid")),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.r2.upload"),
-            patch("nodalpulse.workers.crawl.find_or_create_docket", mock_find),
-            patch("nodalpulse.workers.crawl.upsert_filing", mock_upsert),
-            patch("nodalpulse.workers.crawl.EXTRACTION_MODE", "on-demand"),
+            patch("nodalpulse.workers.crawl_shared.find_or_create_docket", mock_find),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing", mock_upsert),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing_dockets", AsyncMock()),
+            patch("nodalpulse.workers.crawl_shared.get_all_tracked_docket_ids", AsyncMock(return_value=set())),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             await handle_crawl_puct({})
 
-        mock_find.assert_called_once_with("src-uuid", "59475")
+        mock_find.assert_called_once_with("src-uuid", "59475", jurisdiction="PUCT")
         mock_upsert.assert_called_once()
         assert mock_upsert.call_args.kwargs.get("docket_id") == "docket-uuid-59475"
 
     @pytest.mark.asyncio
     async def test_no_control_number_skips_docket_lookup(self):
         """Filing without control_number in metadata does not call find_or_create_docket."""
-        mock_filing = MagicMock()
-        mock_filing.filed_at = "2026-05-12T00:00:00"
-        mock_filing.file_ext = "pdf"
-        mock_filing.doc_type = "puct-order"
-        mock_filing.external_id = "no_cn_filing"
-        mock_filing.metadata = {}  # no control_number
+        from nodalpulse.crawlers.base import RawFiling
 
-        async def fake_get_rows(since=None):
-            return [{"external_id": "no_cn_filing"}]
+        mock_filing = RawFiling(
+            source_slug="puct",
+            external_id="no_cn_filing",
+            doc_type="puct-order",
+            title="No CN Filing",
+            source_url="https://interchange.puc.texas.gov/Documents/no_cn_filing.PDF",
+            filed_at="2026-05-12T00:00:00+00:00",
+            content=b"",  # deferred
+            file_ext="pdf",
+            metadata={},  # no control_number
+        )
 
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
-        mock_crawler._download_filing = AsyncMock(return_value=mock_filing)
+        mock_crawler.fetch_new = AsyncMock(return_value=[mock_filing])
 
         mock_find = AsyncMock(return_value="docket-uuid")
 
         with (
-            patch("nodalpulse.workers.crawl.get_last_crawled_at", return_value="2026-05-11"),
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", AsyncMock(return_value="2026-05-11")),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", AsyncMock(return_value="src-uuid")),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.r2.upload"),
-            patch("nodalpulse.workers.crawl.find_or_create_docket", mock_find),
-            patch("nodalpulse.workers.crawl.upsert_filing", AsyncMock(return_value="filing-uuid")),
-            patch("nodalpulse.workers.crawl.EXTRACTION_MODE", "on-demand"),
+            patch("nodalpulse.workers.crawl_shared.find_or_create_docket", mock_find),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing", AsyncMock(return_value="filing-uuid")),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing_dockets", AsyncMock()),
+            patch("nodalpulse.workers.crawl_shared.get_all_tracked_docket_ids", AsyncMock(return_value=set())),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             await handle_crawl_puct({})

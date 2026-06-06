@@ -8,6 +8,10 @@ Three-level architecture mirroring the new ASP.NET MVC site:
 Dedup: after L1+L2 resolves (control_number, item_number) pairs, existing
 items are filtered out before L3 document-URL fetches fire — cuts ~95% of
 L3 requests on steady-state nightly runs.
+
+Deferred R2: content is NOT downloaded at crawl time. source_url is stored and
+the PDF/ZIP is fetched by the extract worker post-triage, matching the pattern
+used by FERC/CAISO/PJM. Only tracked+relevant filings ever materialise R2.
 """
 
 import asyncio
@@ -19,7 +23,6 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from selectolax.parser import HTMLParser
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from nodalpulse.crawlers.base import BaseCrawler, RawFiling
 from nodalpulse.db.filings import get_existing_item_keys, get_source_id
@@ -59,30 +62,35 @@ class PuctCrawler(BaseCrawler):
     source_slug = "puct"
 
     async def fetch_new(self, since: str | None = None) -> list[RawFiling]:
-        """Two-phase crawl: resolve doc URLs (L1–L3), then download content.
+        """Resolve doc URLs (L1–L3) and return RawFiling stubs — no content downloaded.
 
-        All PDFs are collected into a list before returning. Acceptable for
-        PUCT's typical batch (~20–60 files/day on Railway's worker memory).
-        If OOM events occur, revisit with an async-generator streaming variant.
-        NOTE: Cloudflare R2 free tier — 1M Class A writes/month; each filing
-        costs one write, so large backfill runs should be rate-limited upstream.
+        Content is deferred to extract time (post-triage), matching FERC/CAISO/PJM.
+        source_url is stored so the extract worker can fetch the PDF/ZIP on demand.
         """
         rows = await self.get_rows(since=since)
-        filings: list[RawFiling] = []
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=30,
-            verify=False,
-            headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
-        ) as client:
-            for row in rows:
-                try:
-                    filing = await self._download_filing(client, row)
-                    if filing:
-                        filings.append(filing)
-                except Exception:
-                    logger.exception("PUCT: failed to download %s", row.get("external_id", "?"))
-        return filings
+        return [
+            RawFiling(
+                source_slug=self.source_slug,
+                external_id=row["external_id"],
+                doc_type=row["doc_type"],
+                title=row["title"],
+                source_url=row["doc_url"],
+                filed_at=row["filed_at"],
+                content=b"",  # deferred — fetched by extract worker post-triage
+                file_ext=_ext_from_url(row["doc_url"]),
+                metadata={
+                    "control_number": row.get("control_number", ""),
+                    "item_number":    row.get("item_number", ""),
+                    "item_key":       row.get("item_key", ""),
+                    "item_type":      row.get("item_type", ""),
+                    "item_type_raw":  row.get("item_type", ""),
+                    "description_raw": row.get("description_raw", ""),
+                    "party":          row.get("party", ""),
+                },
+            )
+            for row in rows
+            if row.get("doc_url")
+        ]
 
     async def get_rows(self, since: str | None = None) -> list[dict]:
         """L1+L2+dedup+L3: return rows with doc_url resolved, no content downloaded."""
@@ -165,33 +173,6 @@ class PuctCrawler(BaseCrawler):
 
         doc_lists = await asyncio.gather(*[_fetch_docs(item) for item in items])
         return [doc for sublist in doc_lists for doc in sublist]
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-    async def _download_filing(self, client: httpx.AsyncClient, row: dict) -> RawFiling | None:
-        doc_url = row.get("doc_url")
-        if not doc_url:
-            return None
-        resp = await client.get(doc_url)
-        resp.raise_for_status()
-        return RawFiling(
-            source_slug=self.source_slug,
-            external_id=row["external_id"],
-            doc_type=row["doc_type"],
-            title=row["title"],
-            source_url=doc_url,
-            filed_at=row["filed_at"],
-            content=resp.content,
-            file_ext=_ext_from_response(resp),
-            metadata={
-                "control_number": row.get("control_number", ""),
-                "item_number": row.get("item_number", ""),
-                "item_key": row.get("item_key", ""),
-                "item_type": row.get("item_type", ""),
-                "item_type_raw": row.get("item_type", ""),
-                "description_raw": row.get("description_raw", ""),
-                "party": row.get("party", ""),
-            },
-        )
 
 
 # ── parsing helpers ───────────────────────────────────────────────────────────
@@ -301,13 +282,7 @@ def _parse_date(raw: str) -> str | None:
     return None
 
 
-def _ext_from_response(resp: httpx.Response) -> str:
-    ct = resp.headers.get("content-type", "")
-    if "pdf" in ct:
-        return "pdf"
-    if "html" in ct:
-        return "html"
-    if "word" in ct or "docx" in ct:
-        return "docx"
-    m = re.search(r"\.(\w{2,4})(?:\?|$)", str(resp.url))
+def _ext_from_url(url: str) -> str:
+    """Infer file extension from URL path. Lowercases to normalise .PDF/.ZIP/.DOCX."""
+    m = re.search(r"\.(\w{2,4})(?:[?#]|$)", url)
     return m.group(1).lower() if m else "bin"

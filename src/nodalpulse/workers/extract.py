@@ -569,10 +569,18 @@ async def handle_extract(payload: dict) -> dict:
     return {"filing_id": filing_id, "extraction_id": extraction_id, "verdict": haiku_verdict}
 
 
+_PUCT_HOST = "interchange.puc.texas.gov"
+
+
 async def _fetch_source_url(url: str) -> bytes:
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    # PUCT Interchange uses a self-signed / problematic SSL cert; verify only for that host.
+    verify = host != _PUCT_HOST
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=30,
+        verify=verify,
         headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
     ) as client:
         resp = await client.get(url)
