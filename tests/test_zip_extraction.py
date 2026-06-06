@@ -192,3 +192,20 @@ class TestZipText:
         assert "Report text" in result
         # XLSX bytes must not appear as garbage text
         assert "PK" not in result or "Report text" in result
+
+    def test_docx_disguised_as_zip(self):
+        """ZIP that IS a DOCX (word/document.xml at root) extracts via _docx_text.
+
+        PUCT sometimes packages a DOCX with a .ZIP extension. The old PK-magic ->
+        _docx_text path handled this; _zip_text must preserve that behaviour.
+        """
+        # _make_docx creates a real DOCX (ZIP with word/document.xml at root)
+        docx_bytes = _make_docx("PUCT mislabelled DOCX as ZIP — SGIA Amendment")
+        result = _zip_text(docx_bytes)
+        assert "PUCT mislabelled DOCX as ZIP" in result
+
+    def test_dispatch_docx_as_zip_via_extract_text(self):
+        """_extract_text with file_ext='zip' on a DOCX-as-ZIP still extracts text."""
+        docx_bytes = _make_docx("Regulation text inside DOCX-as-ZIP")
+        result = _extract_text(docx_bytes, "zip")
+        assert "Regulation text inside DOCX-as-ZIP" in result

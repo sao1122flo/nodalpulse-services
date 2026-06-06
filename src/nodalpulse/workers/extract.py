@@ -809,9 +809,17 @@ def _zip_text(content: bytes) -> str:
     Enumerates entries, extracts text from each supported type, and concatenates
     with === filename === separators. Skips shapefile components, images, and
     spreadsheets. Returns "" on corrupt/empty/unsupported archives (graceful no_text).
+
+    DOCX-as-ZIP: PUCT sometimes packages a DOCX with a .ZIP extension. Detected by
+    the presence of word/document.xml at the root — routed to _docx_text directly.
     """
     try:
         with zipfile.ZipFile(BytesIO(content)) as z:
+            # If the archive itself is a DOCX (word/document.xml at root),
+            # delegate to _docx_text so previously-working extractions keep working.
+            if "word/document.xml" in z.namelist():
+                return _docx_text(content)
+
             entries = z.infolist()
             if not entries:
                 return ""
