@@ -504,13 +504,14 @@ _QD_SLUG_MAP: dict[str, str] = {
     "ferc":        "ferc",
 }
 # Canonical record-page markets (must match _INDEX_MARKETS in app.py)
-_QD_INDEX_SOURCES: frozenset[str] = frozenset({"puct", "caiso", "ferc", "pjm"})
+_QD_INDEX_SOURCES: frozenset[str] = frozenset({"puct", "caiso", "ferc", "pjm", "cpuc"})
 # Market landing pages (always valid fallback)
 _QD_LANDING: dict[str, str] = {
     "puct":       "https://nodalpulse.com/texas",
     "ercot-nprr": "https://nodalpulse.com/texas",
     "ercot-mn":   "https://nodalpulse.com/texas",
     "caiso":      "https://nodalpulse.com/california",
+    "cpuc":       "https://nodalpulse.com/california",
     "ferc":       "https://nodalpulse.com/pjm",
     "pjm":        "https://nodalpulse.com/pjm",
 }

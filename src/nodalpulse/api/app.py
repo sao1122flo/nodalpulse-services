@@ -53,7 +53,7 @@ async def health() -> JSONResponse:
 
 # ── public record endpoints (no auth, 0 LLM calls, whitelisted fields only) ──
 
-_VALID_MARKETS = frozenset({"puct", "caiso", "ferc", "pjm", "ercot-nprr", "ercot-mn"})
+_VALID_MARKETS = frozenset({"puct", "caiso", "ferc", "pjm", "ercot-nprr", "ercot-mn", "cpuc"})
 
 # In-memory rate limiter for /public/lead: max 5 submissions per IP per 10 min
 _lead_ip_log: dict[str, list[float]] = defaultdict(list)
@@ -101,7 +101,7 @@ def _verify_lead_token(token: str, secret: str) -> str | None:
         return None
 
 
-_INDEX_MARKETS = ["puct", "caiso", "ferc", "pjm"]
+_INDEX_MARKETS = ["puct", "caiso", "ferc", "pjm", "cpuc"]
 
 
 @app.get("/public/record/index")
