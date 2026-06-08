@@ -70,7 +70,7 @@ _PDF_HREF_RE = re.compile(r"""href=['"]?(/PublishedDocs[^'">\s]+)['"]?""", re.I)
 # Numeric doc ID from PDF filename: .../608275753.pdf → "608275753"
 _PDF_ID_RE   = re.compile(r"/([0-9]+)\.\w{2,5}$", re.I)
 # Proceeding embedded in title cell
-_PROC_IN_TITLE_RE = re.compile(r"Proceeding:\s*(\S+)", re.I)
+_PROC_IN_TITLE_RE = re.compile(r"Proceeding:\s*([A-Za-z][0-9]+)", re.I)
 # Strip leading proceeding number prefix from title text
 _PROC_PREFIX_RE   = re.compile(r"^[A-Z][0-9]{5,9}\s+")
 # Normalize proceeding number: A.25-08-008 → A2508008
