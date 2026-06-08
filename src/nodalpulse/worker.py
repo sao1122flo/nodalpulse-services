@@ -9,6 +9,7 @@ from nodalpulse.workers.compose_brief import handle_compose_brief
 from nodalpulse.workers.crawl import handle_crawl_puct
 from nodalpulse.workers.crawl_ercot import handle_crawl_ercot
 from nodalpulse.workers.crawl_caiso import handle_crawl_caiso
+from nodalpulse.workers.crawl_cpuc import handle_crawl_cpuc
 from nodalpulse.workers.crawl_ferc import handle_crawl_ferc
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_imm import handle_crawl_imm
@@ -23,6 +24,7 @@ HANDLERS = {
     "crawl-puct":            handle_crawl_puct,
     "crawl-ercot":           handle_crawl_ercot,
     "crawl-caiso":           handle_crawl_caiso,
+    "crawl-cpuc":            handle_crawl_cpuc,
     "crawl-ferc":            handle_crawl_ferc,
     "crawl-pjm":             handle_crawl_pjm,
     "crawl-imm":             handle_crawl_imm,

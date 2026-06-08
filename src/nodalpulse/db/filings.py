@@ -101,6 +101,30 @@ async def get_ferc_docket_set() -> set[str]:
         return {row[0] for row in result.fetchall()}
 
 
+async def get_cpuc_docket_set() -> set[str]:
+    """Return normalized CPUC proceeding numbers for the daily crawl watch set.
+
+    Queries all dockets with jurisdiction='CPUC' regardless of which source created them
+    (CAISO cross-ref extraction stores them under the CAISO source; manually seeded dockets
+    use the cpuc source). Normalizes dots/dashes to match the search-form format:
+    A.25-08-008 → A2508008.
+    """
+    import re
+    _norm_re = re.compile(r"[.\-\s]")
+    _valid_re = re.compile(r"^[A-Z][0-9]{5,}$")
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT external_id FROM dockets WHERE jurisdiction = 'CPUC'"),
+        )
+        normalized: set[str] = set()
+        for (raw,) in result.fetchall():
+            n = _norm_re.sub("", (raw or "").strip().upper())
+            if _valid_re.match(n):
+                normalized.add(n)
+        return normalized
+
+
 async def get_pjm_ferc_docket_set() -> set[str]:
     """Return curated PJM-FERC docket external_ids for the daily crawl watch set.
 

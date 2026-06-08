@@ -13,7 +13,7 @@ import pdfplumber
 from selectolax.parser import HTMLParser
 
 from nodalpulse.db.extractions import get_filing, insert_extraction, update_filing_r2_key
-from nodalpulse.db.filings import find_or_create_docket, upsert_filing_dockets
+from nodalpulse.db.filings import find_or_create_docket, get_source_id, upsert_filing_dockets
 from nodalpulse.llm.client import classify
 from nodalpulse.llm.client import extract as llm_extract
 from nodalpulse.llm.taxonomy import TEXAS_ELECTRICITY_TAXONOMY
@@ -335,6 +335,11 @@ def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
     # FERC filings, which is acceptable. Mirrors the PJM early-return pattern.
     if source_slug == "ferc":
         return _EXTRACT_SYSTEM_CAISO
+    # CPUC: California state regulator — use CAISO prompt as v1 lens (#79).
+    # CPUC-specific fields (initiative_name/cpuc_proceeding_refs) will be null for CPUC docs;
+    # acceptable. Flag for a dedicated CPUC lens if extraction quality degrades.
+    if source_slug == "cpuc":
+        return _EXTRACT_SYSTEM_CAISO
     if source_slug == "caiso":
         base = _EXTRACT_SYSTEM_CAISO
     elif doc_type == "ercot-mn":
@@ -497,12 +502,13 @@ async def handle_extract(payload: dict) -> dict:
         return {"filing_id": filing_id, "skipped": True, "reason": reason}
 
     # Haiku triage — cheap pass before any R2 write or Sonnet call.
-    # CAISO and IMM skip triage: both are curated/high-signal corpora where
+    # CAISO, CPUC, and IMM skip triage: all are curated/high-signal corpora where
     # every filing is electricity-relevant by definition.
     # - CAISO: operator-curated HTML index; Texas-focused triage prompt produces false negatives.
+    # - CPUC: Energy industry filter applied at crawl time; 100% CA electricity proceedings.
     # - IMM: <20 filings/year, 100% FERC electricity (complaints, briefs, SoM reports).
     # PJM uses a firehose-discovered set — a broader surface that Haiku filters first.
-    _TRIAGE_SKIP_SOURCES = {"caiso", "imm"}
+    _TRIAGE_SKIP_SOURCES = {"caiso", "cpuc", "imm"}
     if source_slug in _TRIAGE_SKIP_SOURCES:
         haiku_verdict = "relevant"
         logger.info("Filing %s triage skipped (source=%s — curated/high-signal)", filing_id, source_slug)
@@ -701,17 +707,31 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
     return b""  # unreachable; satisfies type checker
 
 
+_CPUC_PROC_NORM_RE  = re.compile(r"[.\-\s]")
+_CPUC_PROC_VALID_RE = re.compile(r"^[A-Z][0-9]{5,}$")
+
+
 async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict) -> None:
     refs = extracted.get("cpuc_proceeding_refs") or []
     if not refs:
         return
+
+    # Use the cpuc source so cross-ref dockets share rows with the CpucAdapter (#79).
+    # Normalize A.25-08-008 → A2508008 so find_or_create_docket hits the same row the
+    # CpucAdapter uses. Falls back to the caller's source_id if cpuc source is not seeded.
+    cpuc_source_id = await get_source_id("cpuc") or source_id
+
     docket_ids: list[str] = []
     for ref in refs:
+        normalized = _CPUC_PROC_NORM_RE.sub("", str(ref).strip().upper())
+        if not _CPUC_PROC_VALID_RE.match(normalized):
+            logger.warning("_write_cpuc_cross_refs: skipping malformed ref %r (normalized: %r)", ref, normalized)
+            continue
         try:
-            docket_id = await find_or_create_docket(source_id, str(ref), jurisdiction="CPUC")
+            docket_id = await find_or_create_docket(cpuc_source_id, normalized, jurisdiction="CPUC")
             docket_ids.append(docket_id)
         except Exception as exc:
-            logger.warning("Failed to create CPUC docket ref %s: %s", ref, exc)
+            logger.warning("Failed to create CPUC docket ref %s: %s", normalized, exc)
     if docket_ids:
         # first_is_primary=False — primary docket was set at crawl time from the FERC caption
         await upsert_filing_dockets(filing_id, docket_ids, first_is_primary=False)

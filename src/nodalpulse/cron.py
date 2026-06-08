@@ -69,11 +69,12 @@ async def _tick(now_ct: datetime) -> None:
                 await enqueue("crawl-ercot", {"since": since_date}, priority=10)
                 await enqueue("crawl-ferc",  {"since": since_date}, priority=10)
                 await enqueue("crawl-caiso", {"since": since_date}, priority=10)
+                await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)
                 await enqueue("crawl-pjm",   {"since": since_date}, priority=10)
                 await enqueue("crawl-imm",           {"since": since_date}, priority=10)
                 await enqueue("crawl-pjm-calendar",  {}, priority=10)
                 await mark_crawl_done_for(today)
-                logger.info("Enqueued crawl-puct + crawl-ercot + crawl-ferc + crawl-caiso + crawl-pjm + crawl-imm + crawl-pjm-calendar for %s (since=%s)", today, since_date)
+                logger.info("Enqueued crawl-puct + crawl-ercot + crawl-ferc + crawl-caiso + crawl-cpuc + crawl-pjm + crawl-imm + crawl-pjm-calendar for %s (since=%s)", today, since_date)
             except Exception:
                 logger.exception("Failed to enqueue crawls for %s — will retry next minute", today)
 
@@ -108,6 +109,7 @@ async def _startup_catchup(now_ct: datetime) -> None:
                 await enqueue("crawl-ercot", {"since": since_date}, priority=10)
                 await enqueue("crawl-ferc",  {"since": since_date}, priority=10)
                 await enqueue("crawl-caiso", {"since": since_date}, priority=10)
+                await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)
                 await enqueue("crawl-pjm",   {"since": since_date}, priority=10)
                 await enqueue("crawl-imm",           {"since": since_date}, priority=10)
                 await enqueue("crawl-pjm-calendar",  {}, priority=10)

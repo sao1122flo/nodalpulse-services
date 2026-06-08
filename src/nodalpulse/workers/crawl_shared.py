@@ -32,6 +32,7 @@ _SOURCE_JURISDICTION: dict[str, str] = {
     "caiso":      "CAISO-FERC",   # T5
     "pjm":        "PJM-FERC",     # T8
     "imm":        "PJM-FERC",     # T9 — IMM files at FERC; dockets are PJM-FERC
+    "cpuc":       "CPUC",         # #79
 }
 
 
