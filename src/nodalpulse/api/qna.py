@@ -177,7 +177,7 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
             text("""
                 SELECT
                     COALESCE(tracked_docket_ids::text[], '{}') AS profile_ids,
-                    COALESCE(tracked_tags, '[]'::json)         AS tracked_tags,
+                    COALESCE(tracked_tags, '[]'::jsonb)        AS tracked_tags,
                     COALESCE(market_roles, '{}')               AS market_roles
                 FROM user_profiles
                 WHERE user_id = CAST(:uid AS uuid)
