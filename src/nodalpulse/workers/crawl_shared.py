@@ -36,7 +36,12 @@ _SOURCE_JURISDICTION: dict[str, str] = {
 }
 
 
-async def run_adapter(adapter: MarketAdapter, source_slug: str, since: str | None) -> dict:
+async def run_adapter(
+    adapter: MarketAdapter,
+    source_slug: str,
+    since: str | None,
+    max_filings: int | None = None,
+) -> dict:
     """Fetch, persist, and optionally enqueue extraction for all new filings.
 
     Docket linkage (multi-docket aware):
@@ -50,19 +55,37 @@ async def run_adapter(adapter: MarketAdapter, source_slug: str, since: str | Non
 
     R2 upload: skipped when filing.content is empty (deferred adapters such as FERC
     that store source_url only at crawl time and upload to R2 at extraction time).
+
+    max_filings: on-demand mode — cap the filings list to the N most recent after
+    fetch. Also bypasses MAX_LOOKBACK_DAYS so the caller's since date is respected
+    as-is (required for backfills that must reach beyond the 3-day rolling window).
     """
-    raw_since = since or await get_last_crawled_at(source_slug)
-    earliest = (date.today() - timedelta(days=MAX_LOOKBACK_DAYS)).isoformat()
-    effective_since = max(raw_since, earliest) if raw_since else earliest
+    if max_filings is not None and since is not None:
+        # On-demand: caller sets an appropriate since floor; skip the lookback cap.
+        effective_since = since
+    else:
+        raw_since = since or await get_last_crawled_at(source_slug)
+        earliest = (date.today() - timedelta(days=MAX_LOOKBACK_DAYS)).isoformat()
+        effective_since = max(raw_since, earliest) if raw_since else earliest
 
     source_id = await get_source_id(source_slug)
     if not source_id:
         raise RuntimeError(f"source '{source_slug}' not found -- run services_schema.sql")
 
     jurisdiction = _SOURCE_JURISDICTION.get(source_slug)
-    logger.info("run_adapter source=%s since=%s jurisdiction=%s", source_slug, effective_since, jurisdiction)
+    logger.info(
+        "run_adapter source=%s since=%s jurisdiction=%s max_filings=%s",
+        source_slug, effective_since, jurisdiction, max_filings,
+    )
     filings = await adapter.fetch_new(since=effective_since)
     logger.info("run_adapter source=%s fetched=%d", source_slug, len(filings))
+
+    if max_filings is not None and len(filings) > max_filings:
+        logger.info(
+            "run_adapter source=%s on-demand cap: keeping %d of %d (most recent first)",
+            source_slug, max_filings, len(filings),
+        )
+        filings = filings[:max_filings]
 
     # Load tracked docket set once per tick; empty set means no extractions in selective mode.
     tracked_set: set[str] = set()

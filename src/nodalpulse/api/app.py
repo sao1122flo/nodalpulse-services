@@ -830,9 +830,10 @@ async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
 
 # ── On-demand crawl ───────────────────────────────────────────────────────────
 
-_ON_DEMAND_BACKFILL_DAYS = int(os.environ.get("ON_DEMAND_BACKFILL_DAYS", "90"))
-_ON_DEMAND_RATE_CAP = int(os.environ.get("ON_DEMAND_USER_HOURLY_CAP", "3"))
-_ON_DEMAND_ALLOWED = frozenset({"cpuc", "ferc"})
+_ON_DEMAND_MAX_FILINGS = int(os.environ.get("ON_DEMAND_MAX_FILINGS", "30"))
+_ON_DEMAND_SINCE       = os.environ.get("ON_DEMAND_SINCE", "2020-01-01")
+_ON_DEMAND_RATE_CAP    = int(os.environ.get("ON_DEMAND_USER_HOURLY_CAP", "3"))
+_ON_DEMAND_ALLOWED     = frozenset({"cpuc", "ferc"})
 
 
 class OnDemandCrawlRequest(BaseModel):
@@ -902,19 +903,24 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
     jurisdiction = "CPUC" if body.source_slug == "cpuc" else "FERC"
     docket_id = await find_or_create_docket(source_id, body.proceeding_id, jurisdiction)
 
-    # Step 3 — enqueue parametrized backfill (governor: 1 proceeding, capped since date)
-    since = (date.today() - timedelta(days=_ON_DEMAND_BACKFILL_DAYS)).isoformat()
+    # Step 3 — enqueue parametrized backfill.
+    # Governor: 1 proceeding, no date floor (recent-first), capped at ON_DEMAND_MAX_FILINGS.
+    # ON_DEMAND_SINCE = "2020-01-01" is the effective floor to bound HTTP call depth while
+    # reaching well beyond MAX_LOOKBACK_DAYS; run_adapter bypasses the lookback cap when
+    # max_filings is set so this date is respected as-is.
     job_kind = f"crawl-{body.source_slug}"
     if body.source_slug == "cpuc":
         job_payload = {
             "proc_numbers": [body.proceeding_id],
-            "since":        since,
+            "since":        _ON_DEMAND_SINCE,
+            "max_filings":  _ON_DEMAND_MAX_FILINGS,
             "user_id":      body.user_id,
         }
     else:
         job_payload = {
             "docket_numbers": [body.proceeding_id],
-            "since":          since,
+            "since":          _ON_DEMAND_SINCE,
+            "max_filings":    _ON_DEMAND_MAX_FILINGS,
             "user_id":        body.user_id,
         }
 

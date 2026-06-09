@@ -29,7 +29,10 @@ async def handle_crawl_ferc(payload: dict) -> dict:
             return {"source": "ferc", "saved": 0, "skipped": 0, "errors": 0, "watched": 0}
         logger.info("handle_crawl_ferc: %d dockets in watch set", len(docket_set))
 
-    result = await run_adapter(FercAdapter(docket_set), "ferc", payload.get("since"))
+    result = await run_adapter(
+        FercAdapter(docket_set), "ferc", payload.get("since"),
+        max_filings=payload.get("max_filings"),
+    )
     result["watched"] = len(docket_set)
     logger.info("FERC crawl complete: %s", result)
     return result
