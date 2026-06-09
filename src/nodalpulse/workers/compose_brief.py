@@ -75,8 +75,18 @@ PROMPT_VER = "1.0"
 
 # Strict citation regex — hallucinated citations that don't match are dropped.
 _CITATION_RE = re.compile(
-    r"\[(ERCOT|PUCT|FERC|TLO|ERCOT-NPRR|ERCOT-MN)[^\]]+, p\.\d+ ¶\d+\]"
+    r"\[(ERCOT|ERCOT-MN|PUCT|FERC|PJM|CAISO|CPUC|TLO)[^\]]+, p\.\d+ ¶\d+\]"
 )
+
+# Maps docket.jurisdiction → citation label (consistent with #86/#88 market labeling).
+_JURISDICTION_LABEL: dict[str, str] = {
+    "FERC":       "FERC",
+    "PJM-FERC":   "PJM",
+    "CAISO-FERC": "CAISO",
+    "CPUC":       "CPUC",
+    "PUCT":       "PUCT",
+    "ERCOT":      "ERCOT",
+}
 
 _COMPOSE_SYSTEM = """\
 You are NodalPulse's brief composer. You write 2-line summaries of regulatory filings
@@ -336,7 +346,12 @@ def _parse_payload(raw) -> dict:
 
 
 def _build_citation(payload: dict, filing: dict) -> str:
-    """Construct a canonical [SOURCE ID, p.N ¶N] citation from available data."""
+    """Construct a canonical [LABEL ID, p.N ¶N] citation.
+
+    Prefix derives from docket.jurisdiction (authoritative), not doc_type or LLM output.
+    Identifier uses docket_external_id (clean DB value), never the LLM docket_number field
+    which may already contain a prefix string.
+    """
     metadata = filing.get("metadata") or {}
     if isinstance(metadata, str):
         try:
@@ -346,10 +361,11 @@ def _build_citation(payload: dict, filing: dict) -> str:
 
     doc_type = filing.get("doc_type", "puct-filing")
 
+    # ERCOT subtypes need metadata-specific identifiers.
     if doc_type == "ercot-nprr":
         identifier = (
             metadata.get("nprr_number")
-            or payload.get("docket_number")
+            or filing.get("docket_external_id")
             or filing["filing_id"][:8]
         )
         return f"[ERCOT {identifier}, p.1 ¶1]"
@@ -357,18 +373,20 @@ def _build_citation(payload: dict, filing: dict) -> str:
     if doc_type == "ercot-mn":
         identifier = (
             metadata.get("notice_id")
-            or payload.get("docket_number")
+            or filing.get("docket_external_id")
             or filing["filing_id"][:8]
         )
         return f"[ERCOT-MN {identifier}, p.1 ¶1]"
 
-    # PUCT (default)
-    control = (
-        payload.get("docket_number")
+    # All other sources: derive label from jurisdiction, identifier from docket_external_id.
+    jurisdiction = filing.get("docket_jurisdiction") or ""
+    label = _JURISDICTION_LABEL.get(jurisdiction, "PUCT")
+    identifier = (
+        filing.get("docket_external_id")
         or metadata.get("control_number")
         or filing["filing_id"][:8]
     )
-    return f"[PUCT {control}, p.1 ¶1]"
+    return f"[{label} {identifier}, p.1 ¶1]"
 
 
 def _build_composer_input(entry: dict) -> dict:

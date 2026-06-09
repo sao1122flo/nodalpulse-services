@@ -275,8 +275,6 @@ def build_brief_html(
     """
     date_str = brief_date.strftime("%A, %B %-d, %Y")
     gen_ct = generated_at.astimezone(_CHICAGO).strftime("%H:%M CT")
-    eval_label = "evals green" if eval_ok else "evals warning"
-
     banner_html = ""
     if not filters_active:
         banner_html = (
@@ -356,7 +354,7 @@ def build_brief_html(
       &nbsp;&middot;&nbsp;
       <a href="https://nodalpulse.com/status">Status</a>
       <span class="footer-stamp">
-        v{_esc(composer_version)} &middot; generated {_esc(gen_ct)} &middot; {_esc(eval_label)}
+        v{_esc(composer_version)} &middot; generated {_esc(gen_ct)}
       </span>
     </div>
   </div>

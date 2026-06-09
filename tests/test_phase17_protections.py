@@ -36,13 +36,14 @@ class TestLookbackCap:
             return []
 
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
+        mock_crawler.fetch_new = fake_get_rows
 
         with (
-            patch("nodalpulse.workers.crawl.get_last_crawled_at", return_value=old_date),
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", return_value=old_date),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", return_value="src-uuid"),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             await handle_crawl_puct({})
@@ -60,13 +61,14 @@ class TestLookbackCap:
             return []
 
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
+        mock_crawler.fetch_new = fake_get_rows
 
         with (
-            patch("nodalpulse.workers.crawl.get_last_crawled_at", return_value=yesterday),
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", return_value=yesterday),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", return_value="src-uuid"),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             await handle_crawl_puct({})
@@ -84,12 +86,13 @@ class TestLookbackCap:
             return []
 
         mock_crawler = MagicMock()
-        mock_crawler.get_rows = fake_get_rows
+        mock_crawler.fetch_new = fake_get_rows
 
         with (
-            patch("nodalpulse.workers.crawl.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", return_value="src-uuid"),
             patch("nodalpulse.workers.crawl.PuctCrawler", return_value=mock_crawler),
-            patch("nodalpulse.workers.crawl.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl import handle_crawl_puct
             await handle_crawl_puct({"since": "2020-01-01"})
@@ -111,12 +114,13 @@ class TestLookbackCap:
         mock_crawler.fetch_new = fake_fetch_new
 
         with (
-            patch("nodalpulse.workers.crawl_ercot.get_last_crawled_at", return_value=old_date),
-            patch("nodalpulse.workers.crawl_ercot.get_source_id", return_value="src-uuid"),
-            patch("nodalpulse.workers.crawl_ercot.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", return_value=old_date),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.MAX_LOOKBACK_DAYS", 3),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
-            from nodalpulse.workers.crawl_ercot import _run_crawler
-            await _run_crawler(mock_crawler, "ercot-nprr", None)
+            from nodalpulse.workers.crawl_shared import run_adapter
+            await run_adapter(mock_crawler, "ercot-nprr", None)
 
         assert captured["since"] >= expected_floor
 

@@ -130,15 +130,15 @@ class TestExtractionModeGateErcot:
             return "job-id"
 
         with (
-            patch("nodalpulse.workers.crawl_ercot.get_last_crawled_at", return_value="2026-05-11"),
-            patch("nodalpulse.workers.crawl_ercot.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", return_value="2026-05-11"),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", return_value="src-uuid"),
             patch("nodalpulse.workers.crawl_ercot.ErcotNprrCrawler", return_value=mock_crawler),
             patch("nodalpulse.workers.crawl_ercot.ErcotMarketNoticesCrawler",
                   return_value=MagicMock(fetch_new=AsyncMock(return_value=[]))),
-            patch("nodalpulse.workers.crawl_ercot.upsert_filing", AsyncMock(return_value="filing-uuid")),
-            patch("nodalpulse.workers.crawl_ercot.r2.upload"),
-            patch("nodalpulse.workers.crawl_ercot.enqueue", fake_enqueue),
-            patch("nodalpulse.workers.crawl_ercot.EXTRACTION_MODE", "on-demand"),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing", AsyncMock(return_value="filing-uuid")),
+            patch("nodalpulse.workers.crawl_shared.r2.upload_async"),
+            patch("nodalpulse.workers.crawl_shared.enqueue", fake_enqueue),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "on-demand"),
         ):
             from nodalpulse.workers.crawl_ercot import handle_crawl_ercot
             result = await handle_crawl_ercot({})
@@ -166,15 +166,15 @@ class TestExtractionModeGateErcot:
             return "job-id"
 
         with (
-            patch("nodalpulse.workers.crawl_ercot.get_last_crawled_at", return_value="2026-05-11"),
-            patch("nodalpulse.workers.crawl_ercot.get_source_id", return_value="src-uuid"),
+            patch("nodalpulse.workers.crawl_shared.get_last_crawled_at", return_value="2026-05-11"),
+            patch("nodalpulse.workers.crawl_shared.get_source_id", return_value="src-uuid"),
             patch("nodalpulse.workers.crawl_ercot.ErcotNprrCrawler", return_value=mock_crawler),
             patch("nodalpulse.workers.crawl_ercot.ErcotMarketNoticesCrawler",
                   return_value=MagicMock(fetch_new=AsyncMock(return_value=[]))),
-            patch("nodalpulse.workers.crawl_ercot.upsert_filing", AsyncMock(return_value="filing-uuid")),
-            patch("nodalpulse.workers.crawl_ercot.r2.upload"),
-            patch("nodalpulse.workers.crawl_ercot.enqueue", fake_enqueue),
-            patch("nodalpulse.workers.crawl_ercot.EXTRACTION_MODE", "proactive"),
+            patch("nodalpulse.workers.crawl_shared.upsert_filing", AsyncMock(return_value="filing-uuid")),
+            patch("nodalpulse.workers.crawl_shared.r2.upload_async"),
+            patch("nodalpulse.workers.crawl_shared.enqueue", fake_enqueue),
+            patch("nodalpulse.workers.crawl_shared.EXTRACTION_MODE", "proactive"),
         ):
             from nodalpulse.workers.crawl_ercot import handle_crawl_ercot
             result = await handle_crawl_ercot({})

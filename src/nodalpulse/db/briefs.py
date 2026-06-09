@@ -195,6 +195,7 @@ async def get_filings_for_brief_user(
             f.metadata,
             f.docket_id::text   AS docket_id,
             d.external_id       AS docket_external_id,
+            d.jurisdiction      AS docket_jurisdiction,
             e.id::text          AS extraction_id,
             e.payload           AS extraction_payload,
             e.haiku_verdict,
