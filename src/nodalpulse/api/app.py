@@ -19,6 +19,8 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from nodalpulse.api.auth import verify_bearer
+from nodalpulse.api.crawl_probes import probe_cpuc, probe_ferc
+from nodalpulse.db.filings import find_or_create_docket, get_source_id
 from nodalpulse.settings import settings
 from nodalpulse.api.qna import QnaRequest, handle_qna
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
@@ -824,6 +826,105 @@ async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
         "queued": queued,
         "already_extracted": already_extracted,
     })
+
+
+# ── On-demand crawl ───────────────────────────────────────────────────────────
+
+_ON_DEMAND_BACKFILL_DAYS = int(os.environ.get("ON_DEMAND_BACKFILL_DAYS", "90"))
+_ON_DEMAND_RATE_CAP = int(os.environ.get("ON_DEMAND_USER_HOURLY_CAP", "3"))
+_ON_DEMAND_ALLOWED = frozenset({"cpuc", "ferc"})
+
+
+class OnDemandCrawlRequest(BaseModel):
+    source_slug: str    # "cpuc" | "ferc"
+    proceeding_id: str  # e.g. "A2508008", "EL25-49"
+    user_id: str        # advisory — bearer token is the security boundary
+
+
+@app.post("/crawl/on-demand", dependencies=[Depends(verify_bearer)])
+async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
+    """Validate a non-PUCT proceeding exists, then enqueue a capped backfill crawl.
+
+    Called by trackDocket in nodalpulse-web when a user tracks a CPUC or FERC/PJM
+    docket that is not yet in the index.
+
+    Step 1 (inline, ~1-3 s): probe the source to confirm ≥1 filing exists.
+      Returns {found: 0} immediately if the proceeding is unknown — no stub created.
+    Step 2 (async): enqueue a parametrized crawl-cpuc / crawl-ferc job capped to
+      ON_DEMAND_BACKFILL_DAYS days of history. run_adapter handles deferred R2,
+      selective extraction, and the spending cap via the worker's normal flow.
+
+    Rate-limited to ON_DEMAND_RATE_CAP enqueues per user per hour.
+    Returns {found: int, valid: bool, docket_id?: str}.
+    """
+    if body.source_slug not in _ON_DEMAND_ALLOWED:
+        return JSONResponse({"error": "unsupported_source"}, status_code=400)
+
+    # Rate-limit: max _ON_DEMAND_RATE_CAP on-demand enqueues per user per hour
+    async with AsyncSessionLocal() as db_session:
+        rate_result = await db_session.execute(
+            text("""
+                SELECT COUNT(*) FROM jobs
+                WHERE kind IN ('crawl-cpuc', 'crawl-ferc')
+                  AND payload->>'user_id' = :user_id
+                  AND created_at >= NOW() - INTERVAL '1 hour'
+            """),
+            {"user_id": body.user_id},
+        )
+        recent = int(rate_result.scalar_one())
+
+    if recent >= _ON_DEMAND_RATE_CAP:
+        logger.warning(
+            "crawl-on-demand rate limit: user=%s source=%s proceeding=%s recent_hour=%d",
+            body.user_id, body.source_slug, body.proceeding_id, recent,
+        )
+        return JSONResponse({"error": "rate_limit_exceeded", "retry_after": 3600}, status_code=429)
+
+    # Step 1 — inline probe: confirm the proceeding has filings in the source
+    if body.source_slug == "cpuc":
+        found = await probe_cpuc(body.proceeding_id)
+    else:  # ferc
+        found = await probe_ferc(body.proceeding_id)
+
+    if not found:
+        logger.info(
+            "crawl-on-demand: not found — source=%s proceeding=%s user=%s",
+            body.source_slug, body.proceeding_id, body.user_id,
+        )
+        return JSONResponse({"found": 0, "valid": False})
+
+    # Step 2 — find-or-create the docket row so the web can link user_dockets to it
+    source_id = await get_source_id(body.source_slug)
+    if not source_id:
+        logger.error("crawl-on-demand: source '%s' not found in sources table", body.source_slug)
+        return JSONResponse({"error": "source_not_configured"}, status_code=500)
+
+    jurisdiction = "CPUC" if body.source_slug == "cpuc" else "FERC"
+    docket_id = await find_or_create_docket(source_id, body.proceeding_id, jurisdiction)
+
+    # Step 3 — enqueue parametrized backfill (governor: 1 proceeding, capped since date)
+    since = (date.today() - timedelta(days=_ON_DEMAND_BACKFILL_DAYS)).isoformat()
+    job_kind = f"crawl-{body.source_slug}"
+    if body.source_slug == "cpuc":
+        job_payload = {
+            "proc_numbers": [body.proceeding_id],
+            "since":        since,
+            "user_id":      body.user_id,
+        }
+    else:
+        job_payload = {
+            "docket_numbers": [body.proceeding_id],
+            "since":          since,
+            "user_id":        body.user_id,
+        }
+
+    await enqueue(job_kind, job_payload, priority=7)
+
+    logger.info(
+        "crawl-on-demand: enqueued %s for proceeding=%s user=%s found=%d docket_id=%s",
+        job_kind, body.proceeding_id, body.user_id, found, docket_id,
+    )
+    return JSONResponse({"found": found, "valid": True, "docket_id": docket_id})
 
 
 # ── Q&A ───────────────────────────────────────────────────────────────────────
