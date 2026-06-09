@@ -122,10 +122,15 @@ async def run_adapter(
             )
 
             # Ensure every referenced docket exists; primary docket -> filings.docket_id.
-            # jurisdiction is stamped on INSERT and backfills NULL rows on conflict.
+            # jurisdiction + title are stamped on INSERT and backfill NULL rows on conflict.
+            # title is only passed for the primary docket (index 0); secondary cross-ref
+            # dockets get their own titles when their primary filings are crawled.
             docket_ids: list[str] = []
-            for ref in docket_refs:
-                created = await find_or_create_docket(source_id, ref, jurisdiction=jurisdiction)
+            for i, ref in enumerate(docket_refs):
+                created = await find_or_create_docket(
+                    source_id, ref, jurisdiction=jurisdiction,
+                    title=filing.title if i == 0 else None,
+                )
                 docket_ids.append(created)
             docket_id = docket_ids[0] if docket_ids else None
             if len(docket_refs) > 1:

@@ -55,6 +55,7 @@ async def find_or_create_docket(
     source_id: str,
     docket_number: str,
     jurisdiction: str | None = None,
+    title: str | None = None,
 ) -> str:
     """Find or create a dockets row for this source + docket_number.
 
@@ -63,18 +64,21 @@ async def find_or_create_docket(
 
     jurisdiction: stamped on INSERT; backfills NULL rows on conflict (safe no-op
     for rows already carrying a jurisdiction value).
+    title: populated on INSERT; backfills NULL rows on conflict (never overwrites
+    an existing title — first crawled filing wins, consistent with PUCT convention).
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
-                INSERT INTO dockets (source_id, external_id, status, jurisdiction)
-                VALUES (CAST(:source_id AS uuid), :external_id, 'open', :jurisdiction)
+                INSERT INTO dockets (source_id, external_id, status, jurisdiction, title)
+                VALUES (CAST(:source_id AS uuid), :external_id, 'open', :jurisdiction, :title)
                 ON CONFLICT (source_id, external_id) DO UPDATE
-                  SET updated_at  = NOW(),
-                      jurisdiction = COALESCE(dockets.jurisdiction, EXCLUDED.jurisdiction)
+                  SET updated_at   = NOW(),
+                      jurisdiction = COALESCE(dockets.jurisdiction, EXCLUDED.jurisdiction),
+                      title        = COALESCE(dockets.title, EXCLUDED.title)
                 RETURNING id::text
             """),
-            {"source_id": source_id, "external_id": docket_number, "jurisdiction": jurisdiction},
+            {"source_id": source_id, "external_id": docket_number, "jurisdiction": jurisdiction, "title": title},
         )
         docket_id = result.scalar_one()
         await session.commit()
