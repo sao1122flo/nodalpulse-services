@@ -85,7 +85,7 @@ class PuctCrawler(BaseCrawler):
                     "item_type":      row.get("item_type", ""),
                     "item_type_raw":  row.get("item_type", ""),
                     "description_raw": row.get("description_raw", ""),
-                    "party":          row.get("party", ""),
+                    "filer":          row.get("party", ""),
                 },
             )
             for row in rows
