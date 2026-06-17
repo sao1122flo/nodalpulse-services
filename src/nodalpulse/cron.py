@@ -15,7 +15,7 @@ import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date
+from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, market_has_subscribers
 from nodalpulse.db.scheduler import (
     is_brief_done_for,
     is_crawl_done_for,
@@ -65,16 +65,40 @@ async def _tick(now_ct: datetime) -> None:
         if not await is_crawl_done_for(today):
             try:
                 since_date = (today - timedelta(days=1)).isoformat()
+
+                # Texas markets: always crawl (all paid tiers include TX).
                 await enqueue("crawl-puct",  {"since": since_date}, priority=10)
                 await enqueue("crawl-ercot", {"since": since_date}, priority=10)
-                await enqueue("crawl-ferc",  {"since": since_date}, priority=10)
-                await enqueue("crawl-caiso", {"since": since_date}, priority=10)
-                await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)
-                await enqueue("crawl-pjm",   {"since": since_date}, priority=10)
-                await enqueue("crawl-imm",           {"since": since_date}, priority=10)
-                await enqueue("crawl-pjm-calendar",  {}, priority=10)
+
+                caiso_active = await market_has_subscribers("CAISO")
+                pjm_active   = await market_has_subscribers("PJM")
+
+                # crawl-ferc serves CAISO-FERC *and* PJM-FERC (ER/EL dockets).
+                # Must run if EITHER market has subscribers — gating on CAISO alone
+                # would starve PJM-FERC dockets and produce empty briefs for PJM users.
+                if caiso_active or pjm_active:
+                    await enqueue("crawl-ferc", {"since": since_date}, priority=10)
+                else:
+                    logger.info("No CAISO/PJM subscribers — skipping crawl-ferc for %s", today)
+
+                if caiso_active:
+                    await enqueue("crawl-caiso", {"since": since_date}, priority=10)
+                    await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)
+                else:
+                    logger.info("No CAISO subscribers — skipping crawl-caiso/cpuc for %s", today)
+
+                if pjm_active:
+                    await enqueue("crawl-pjm",          {"since": since_date}, priority=10)
+                    await enqueue("crawl-imm",          {"since": since_date}, priority=10)
+                    await enqueue("crawl-pjm-calendar", {}, priority=10)
+                else:
+                    logger.info("No PJM subscribers — skipping crawl-pjm/imm/pjm-calendar for %s", today)
+
                 await mark_crawl_done_for(today)
-                logger.info("Enqueued crawl-puct + crawl-ercot + crawl-ferc + crawl-caiso + crawl-cpuc + crawl-pjm + crawl-imm + crawl-pjm-calendar for %s (since=%s)", today, since_date)
+                logger.info(
+                    "Enqueued crawls for %s (caiso=%s, pjm=%s, since=%s)",
+                    today, caiso_active, pjm_active, since_date,
+                )
             except Exception:
                 logger.exception("Failed to enqueue crawls for %s — will retry next minute", today)
 
@@ -107,14 +131,22 @@ async def _startup_catchup(now_ct: datetime) -> None:
                 since_date = (today - timedelta(days=1)).isoformat()
                 await enqueue("crawl-puct",  {"since": since_date}, priority=10)
                 await enqueue("crawl-ercot", {"since": since_date}, priority=10)
-                await enqueue("crawl-ferc",  {"since": since_date}, priority=10)
-                await enqueue("crawl-caiso", {"since": since_date}, priority=10)
-                await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)
-                await enqueue("crawl-pjm",   {"since": since_date}, priority=10)
-                await enqueue("crawl-imm",           {"since": since_date}, priority=10)
-                await enqueue("crawl-pjm-calendar",  {}, priority=10)
+                caiso_active = await market_has_subscribers("CAISO")
+                pjm_active   = await market_has_subscribers("PJM")
+                if caiso_active or pjm_active:
+                    await enqueue("crawl-ferc", {"since": since_date}, priority=10)
+                if caiso_active:
+                    await enqueue("crawl-caiso", {"since": since_date}, priority=10)
+                    await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)
+                if pjm_active:
+                    await enqueue("crawl-pjm",          {"since": since_date}, priority=10)
+                    await enqueue("crawl-imm",          {"since": since_date}, priority=10)
+                    await enqueue("crawl-pjm-calendar", {}, priority=10)
                 await mark_crawl_done_for(today)
-                logger.info("Startup catch-up: enqueued crawls for %s (since=%s)", today, since_date)
+                logger.info(
+                    "Startup catch-up: enqueued crawls for %s (caiso=%s, pjm=%s, since=%s)",
+                    today, caiso_active, pjm_active, since_date,
+                )
             except Exception:
                 logger.exception("Startup catch-up: failed to enqueue crawls for %s", today)
 

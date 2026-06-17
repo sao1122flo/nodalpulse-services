@@ -233,6 +233,25 @@ async def check_eval_gate() -> bool:
         return row is None or bool(row[0])
 
 
+async def market_has_subscribers(market: str) -> bool:
+    """True if at least one user has an active market_access:<market> entitlement.
+
+    Used by cron.py to skip crawlers for markets with zero subscribers,
+    avoiding unnecessary crawl cost when no user can benefit from the data.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                "SELECT 1 FROM entitlements "
+                "WHERE feature = :feature "
+                "AND (expires_at IS NULL OR expires_at > NOW()) "
+                "LIMIT 1"
+            ),
+            {"feature": f"market_access:{market}"},
+        )
+        return result.first() is not None
+
+
 async def get_already_enqueued_for_date(brief_date: date) -> set[str]:
     """User IDs that already have a brief row or a pending/running compose-brief job for today."""
     async with AsyncSessionLocal() as session:
