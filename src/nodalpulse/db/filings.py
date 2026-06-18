@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 
 from sqlalchemy import text
@@ -10,6 +11,28 @@ from nodalpulse.crawlers.base import RawFiling
 from nodalpulse.db.engine import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+# FERC dockets use a base-docket + optional subdocket suffix, e.g. ER26-2267-000.
+# The FERC API always returns filings tagged with the BASE docket (ER26-2267), even
+# when the AdvancedSearch query specifies a subdocket.  Storing both creates a split:
+# user tracks ER26-2267-000 (UUID A) but filings link to ER26-2267 (UUID B) → briefs
+# return 0 results for UUID A.  Canonicalize to the base before any DB write.
+_FERC_SUBDOCKET_RE = re.compile(r"^([A-Z]{2}\d{2}-\d+)-\d{3}$")
+_FERC_JURISDICTIONS = frozenset({"FERC", "PJM-FERC", "CAISO-FERC"})
+
+
+def _canonicalize_ferc_docket(docket_number: str, jurisdiction: str | None) -> str:
+    """Strip 3-digit subdocket suffix for FERC-family dockets.
+
+    ER26-2267-000 → ER26-2267
+    EL24-119      → EL24-119  (2 segments — unchanged)
+    ER26-2267-001 → ER26-2267 (all subdockets collapse to base proceeding)
+    Non-FERC jurisdictions are returned unchanged.
+    """
+    if jurisdiction not in _FERC_JURISDICTIONS:
+        return docket_number
+    m = _FERC_SUBDOCKET_RE.match(docket_number)
+    return m.group(1) if m else docket_number
 
 
 async def get_source_id(slug: str) -> str | None:
@@ -66,7 +89,12 @@ async def find_or_create_docket(
     for rows already carrying a jurisdiction value).
     title: populated on INSERT; backfills NULL rows on conflict (never overwrites
     an existing title — first crawled filing wins, consistent with PUCT convention).
+
+    FERC-family dockets are canonicalized before write: ER26-2267-000 → ER26-2267.
+    This prevents the split where user_dockets points to the subdocket UUID while
+    filing_dockets points to the base docket UUID (see _canonicalize_ferc_docket).
     """
+    docket_number = _canonicalize_ferc_docket(docket_number, jurisdiction)
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""

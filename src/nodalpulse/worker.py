@@ -11,6 +11,7 @@ from nodalpulse.workers.crawl_ercot import handle_crawl_ercot
 from nodalpulse.workers.crawl_caiso import handle_crawl_caiso
 from nodalpulse.workers.crawl_cpuc import handle_crawl_cpuc
 from nodalpulse.workers.crawl_ferc import handle_crawl_ferc
+from nodalpulse.workers.crawl_ferc_discovery import handle_crawl_ferc_discovery
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_imm import handle_crawl_imm
 from nodalpulse.workers.crawl_pjm_calendar import handle_crawl_pjm_calendar
@@ -26,6 +27,7 @@ HANDLERS = {
     "crawl-caiso":           handle_crawl_caiso,
     "crawl-cpuc":            handle_crawl_cpuc,
     "crawl-ferc":            handle_crawl_ferc,
+    "crawl-ferc-discovery":  handle_crawl_ferc_discovery,
     "crawl-pjm":             handle_crawl_pjm,
     "crawl-imm":             handle_crawl_imm,
     "crawl-pjm-calendar":   handle_crawl_pjm_calendar,

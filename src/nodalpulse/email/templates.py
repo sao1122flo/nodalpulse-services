@@ -106,6 +106,31 @@ def _render_item(item: dict, app_url: str, brief_date: date) -> str:
     )
 
 
+def _render_discovery_hit(hit: dict, app_url: str) -> str:
+    dockets = ", ".join(hit.get("docket_numbers") or []) or "—"
+    filers_raw = (hit.get("filer_names") or [])[:2]
+    filers = ", ".join(filers_raw) if filers_raw else ""
+    filed = str(hit.get("filed_at") or "")[:10]
+    first_docket = (hit.get("docket_numbers") or [""])[0]
+    track_url = (
+        f"{app_url}/dockets?q={first_docket}" if first_docket else f"{app_url}/dockets"
+    )
+    meta = _esc(dockets)
+    if filed:
+        meta += f" &middot; {_esc(filed)}"
+    if filers:
+        meta += f" &middot; {_esc(filers)}"
+    return (
+        f'<div class="item">\n'
+        f'  <div class="item-header">\n'
+        f'    <a href="{_esc(track_url)}" class="cta">Track this &#x2192;</a>\n'
+        f'    <div class="item-title">{_esc(str(hit.get("description") or "Filing"))}</div>\n'
+        f'  </div>\n'
+        f'  <div class="item-summary" style="font-size:12px;color:#6B7280">{meta}</div>\n'
+        f'</div>\n'
+    )
+
+
 def _base_styles() -> str:
     return f"""
     body {{
@@ -263,6 +288,7 @@ def build_brief_html(
     item_count: int,
     filters_active: bool = True,
     calendar_events: list[dict] = (),
+    discovery_hits: list[dict] = (),
 ) -> str:
     """Build the HTML email for a daily brief.
 
@@ -319,6 +345,18 @@ def build_brief_html(
             f"View all {pool_total} in dashboard &#x2192;</a>"
             f"</div>\n"
         )
+
+    # Discovery section — entity mentions (no LLM, metadata only)
+    if discovery_hits:
+        items_html += (
+            "<div class=\"section-title\">Mentions of your entities</div>\n"
+            "<div style=\"font-size:12px;color:#6B7280;margin:-8px 0 12px;line-height:1.5\">"
+            "Surfaced because a name you watch appears in these new filings. "
+            "Metadata only — click “Track this” for full analysis."
+            "</div>\n"
+        )
+        for hit in discovery_hits:
+            items_html += _render_discovery_hit(hit, app_url)
 
     # WHAT_CHANGED section (flat/global path)
     wc_items = sections.get("what_changed", [])
@@ -455,6 +493,7 @@ def build_brief_text(
     app_url: str,
     unsubscribe_url: str,
     composer_version: str,
+    discovery_hits: list[dict] = (),
 ) -> str:
     date_str = brief_date.strftime("%A, %B %d, %Y")
     lines = [f"NodalPulse — {date_str}", "=" * 52, ""]
@@ -477,6 +516,24 @@ def build_brief_text(
             f"{app_url}/dockets/{sec['external_id']}?date={brief_date.isoformat()}",
             "",
         ]
+
+    if discovery_hits:
+        lines += ["── MENTIONS OF YOUR ENTITIES ──", ""]
+        lines += ["  Metadata only — click Track this for full analysis.", ""]
+        for hit in discovery_hits:
+            first_docket = (hit.get("docket_numbers") or [""])[0]
+            filers_raw = (hit.get("filer_names") or [])[:2]
+            filers = ", ".join(filers_raw) if filers_raw else "—"
+            filed = str(hit.get("filed_at") or "")[:10]
+            track_url = (
+                f"{app_url}/dockets?q={first_docket}" if first_docket else f"{app_url}/dockets"
+            )
+            lines += [
+                str(hit.get("description") or "Filing"),
+                f"  {first_docket} · {filed} · {filers}",
+                f"  {track_url}",
+                "",
+            ]
 
     wc_items = sections.get("what_changed", [])
     if wc_items:

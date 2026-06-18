@@ -76,10 +76,13 @@ async def _tick(now_ct: datetime) -> None:
                 # crawl-ferc serves CAISO-FERC *and* PJM-FERC (ER/EL dockets).
                 # Must run if EITHER market has subscribers — gating on CAISO alone
                 # would starve PJM-FERC dockets and produce empty briefs for PJM users.
+                # crawl-ferc-discovery is the broad metadata sweep for entity-match (#85);
+                # gated the same way since it reads from the same FERC Electric library.
                 if caiso_active or pjm_active:
-                    await enqueue("crawl-ferc", {"since": since_date}, priority=10)
+                    await enqueue("crawl-ferc",           {"since": since_date}, priority=10)
+                    await enqueue("crawl-ferc-discovery", {"since": since_date}, priority=9)
                 else:
-                    logger.info("No CAISO/PJM subscribers — skipping crawl-ferc for %s", today)
+                    logger.info("No CAISO/PJM subscribers — skipping crawl-ferc/discovery for %s", today)
 
                 if caiso_active:
                     await enqueue("crawl-caiso", {"since": since_date}, priority=10)
@@ -134,7 +137,8 @@ async def _startup_catchup(now_ct: datetime) -> None:
                 caiso_active = await market_has_subscribers("CAISO")
                 pjm_active   = await market_has_subscribers("PJM")
                 if caiso_active or pjm_active:
-                    await enqueue("crawl-ferc", {"since": since_date}, priority=10)
+                    await enqueue("crawl-ferc",           {"since": since_date}, priority=10)
+                    await enqueue("crawl-ferc-discovery", {"since": since_date}, priority=9)
                 if caiso_active:
                     await enqueue("crawl-caiso", {"since": since_date}, priority=10)
                     await enqueue("crawl-cpuc",  {"since": since_date}, priority=10)

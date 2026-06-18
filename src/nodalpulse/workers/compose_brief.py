@@ -48,6 +48,7 @@ from nodalpulse.db.briefs import (
     mark_brief_sent,
 )
 from nodalpulse.email.brevo import send_email
+from nodalpulse.db.discovery import get_watched_entity_patterns, get_discovery_hits
 from nodalpulse.email.templates import (
     build_brief_html,
     build_brief_text,
@@ -72,6 +73,7 @@ PER_DOCKET_CEILING = 12
 COMPOSER_MODEL = "claude-sonnet-4-6"
 COMPOSER_VERSION = "1.0"
 PROMPT_VER = "1.0"
+_DISCOVERY_GATE_MARKETS = {"ferc", "pjm", "caiso", "cpuc"}
 
 # Strict citation regex — hallucinated citations that don't match are dropped.
 _CITATION_RE = re.compile(
@@ -616,6 +618,8 @@ async def handle_compose_brief(payload: dict) -> dict:
         )
         return {"user_id": user_id, "status": "maintenance"}
 
+    entity_patterns = await get_watched_entity_patterns(user_id)
+
     # Window: last_brief_date+1 → brief_date (handles Fri→Mon 3-day gap correctly)
     last_date = await get_last_brief_date(user_id)
     if last_date:
@@ -643,6 +647,9 @@ async def handle_compose_brief(payload: dict) -> dict:
         market_roles=user.get("market_roles") or [],
     )
     bundle.log_noops()
+    _run_discovery = bool(entity_patterns) and bool(
+        _DISCOVERY_GATE_MARKETS & set(bundle.market_slugs or [])
+    )
 
     filters_active = bundle.has_implementable_predicates
 
@@ -1002,6 +1009,21 @@ async def handle_compose_brief(payload: dict) -> dict:
     except Exception:
         logger.warning("compose-brief: market_events query failed — omitting calendar")
 
+    # Discovery section — entity mentions within the brief window
+    discovery_hits: list[dict] = []
+    if _run_discovery:
+        try:
+            discovery_hits = await get_discovery_hits(
+                entity_patterns,
+                since_date=window_since.date(),
+                until_date=brief_date,
+                limit=10,
+            )
+        except Exception:
+            logger.warning(
+                "compose-brief: discovery query failed — omitting section user=%s", user_id
+            )
+
     # Build HTML + plain text
     html = build_brief_html(
         brief_date=brief_date,
@@ -1015,6 +1037,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         item_count=item_count,
         filters_active=filters_active,
         calendar_events=pjm_calendar,
+        discovery_hits=discovery_hits,
     )
     text_content = build_brief_text(
         brief_date=brief_date,
@@ -1023,6 +1046,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         app_url=settings.app_url,
         unsubscribe_url=unsubscribe_url,
         composer_version=COMPOSER_VERSION,
+        discovery_hits=discovery_hits,
     )
 
     # Upload HTML + text to R2
