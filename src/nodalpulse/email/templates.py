@@ -236,6 +236,51 @@ def _base_styles() -> str:
     """
 
 
+_SALIENCE_MARKET_ORDER = ["FERC", "CAISO", "PJM", "PUCT", "ERCOT"]
+
+
+def _render_salience_block(salience_items: list[dict], app_url: str) -> str:
+    """Render the 'Market highlights this week' block above the brief content.
+
+    Items must already be filtered to score >= SURFACE_FLOOR before calling.
+    Groups by market in canonical order. Returns '' when salience_items is empty.
+    """
+    if not salience_items:
+        return ""
+
+    by_market: dict[str, list[dict]] = {}
+    for item in salience_items:
+        m = item.get("market") or ""
+        if m not in by_market:
+            by_market[m] = []
+        by_market[m].append(item)
+
+    ordered = [m for m in _SALIENCE_MARKET_ORDER if m in by_market]
+    for m in by_market:
+        if m not in ordered:
+            ordered.append(m)
+
+    html = "<div class=\"section-title\">MARKET HIGHLIGHTS &mdash; THIS WEEK</div>\n"
+    for market in ordered:
+        html += (
+            f"<div style=\"font-size:10px;font-weight:700;text-transform:uppercase;"
+            f"letter-spacing:0.08em;color:#6366F1;margin:10px 0 4px\">{_esc(market)}</div>\n"
+        )
+        for item in by_market[market]:
+            docket_key = item.get("docket_key") or ""
+            headline = item.get("headline") or item.get("docket_title") or docket_key
+            docket_url = f"{app_url}/dockets?q={docket_key}"
+            html += (
+                f"<div style=\"margin-bottom:6px;line-height:1.4\">"
+                f"<a href=\"{_esc(docket_url)}\" style=\"font-family:{_MONO_STACK};"
+                f"font-size:11px;color:#6366F1;text-decoration:none\">{_esc(docket_key)}</a>"
+                f"&nbsp;&mdash;&nbsp;"
+                f"<span style=\"font-size:13px;color:#374151\">{_esc(headline)}</span>"
+                f"</div>\n"
+            )
+    return html
+
+
 def _render_calendar_events(events: list[dict]) -> str:
     """Render PJM upcoming deadline rows as an HTML section."""
     if not events:
@@ -289,6 +334,7 @@ def build_brief_html(
     filters_active: bool = True,
     calendar_events: list[dict] = (),
     discovery_hits: list[dict] = (),
+    salience_items: list[dict] = (),
 ) -> str:
     """Build the HTML email for a daily brief.
 
@@ -314,6 +360,7 @@ def build_brief_html(
             "</div>\n"
         )
 
+    salience_html = _render_salience_block(list(salience_items), app_url)
     items_html = ""
 
     # TOP_OF_MIND section
@@ -384,7 +431,7 @@ def build_brief_html(
       <a href="{app_url}" class="logo">Nodal<span class="logo-pulse">Pulse</span></a>
       <div class="header-meta">{_esc(date_str)} &middot; {item_count} {item_word}</div>
     </div>
-    {banner_html}{items_html}{calendar_html}
+    {banner_html}{salience_html}{items_html}{calendar_html}
     <div class="footer">
       <a href="{app_url}/dashboard">View in app</a>
       &nbsp;&middot;&nbsp;
@@ -494,9 +541,25 @@ def build_brief_text(
     unsubscribe_url: str,
     composer_version: str,
     discovery_hits: list[dict] = (),
+    salience_items: list[dict] = (),
 ) -> str:
     date_str = brief_date.strftime("%A, %B %d, %Y")
     lines = [f"NodalPulse — {date_str}", "=" * 52, ""]
+
+    if salience_items:
+        lines += ["── MARKET HIGHLIGHTS THIS WEEK ──", ""]
+        by_market: dict[str, list[dict]] = {}
+        for item in salience_items:
+            m = item.get("market") or ""
+            if m not in by_market:
+                by_market[m] = []
+            by_market[m].append(item)
+        for market in [m for m in _SALIENCE_MARKET_ORDER if m in by_market]:
+            lines.append(f"[{market}]")
+            for it in by_market[market]:
+                hl = it.get("headline") or it.get("docket_title") or it.get("docket_key") or ""
+                lines.append(f"  {it.get('docket_key','')} — {hl}")
+            lines.append("")
 
     tom_items = sections.get("top_of_mind", [])
     if tom_items:

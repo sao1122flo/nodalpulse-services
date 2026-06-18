@@ -22,7 +22,8 @@ from nodalpulse.db.scheduler import (
     mark_brief_done_for,
     mark_crawl_done_for,
 )
-from nodalpulse.queue.pg_queue import enqueue
+from nodalpulse.queue.pg_queue import enqueue, enqueue_idempotent
+from nodalpulse.workers.salience import _iso_week_start
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,40 @@ async def _tick(now_ct: datetime) -> None:
                     logger.info("No PJM subscribers — skipping crawl-pjm/imm/pjm-calendar for %s", today)
 
                 await mark_crawl_done_for(today)
+
+                # Salience ranking — enqueue once per market per day (idempotent).
+                # Runs after crawls complete so today's filings are in the DB.
+                week_start_str = _iso_week_start(today).isoformat()
+                today_str = today.isoformat()
+                for sal_market in ["PUCT", "ERCOT"]:
+                    await enqueue_idempotent(
+                        "compute-market-salience",
+                        {"market": sal_market, "week_start": week_start_str},
+                        idempotency_key=f"salience-{sal_market}-{today_str}",
+                        priority=8,
+                    )
+                if caiso_active or pjm_active:
+                    await enqueue_idempotent(
+                        "compute-market-salience",
+                        {"market": "FERC", "week_start": week_start_str},
+                        idempotency_key=f"salience-FERC-{today_str}",
+                        priority=8,
+                    )
+                if caiso_active:
+                    await enqueue_idempotent(
+                        "compute-market-salience",
+                        {"market": "CAISO", "week_start": week_start_str},
+                        idempotency_key=f"salience-CAISO-{today_str}",
+                        priority=8,
+                    )
+                if pjm_active:
+                    await enqueue_idempotent(
+                        "compute-market-salience",
+                        {"market": "PJM", "week_start": week_start_str},
+                        idempotency_key=f"salience-PJM-{today_str}",
+                        priority=8,
+                    )
+
                 logger.info(
                     "Enqueued crawls for %s (caiso=%s, pjm=%s, since=%s)",
                     today, caiso_active, pjm_active, since_date,

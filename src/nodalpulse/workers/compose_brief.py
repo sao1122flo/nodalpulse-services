@@ -58,6 +58,7 @@ from nodalpulse.email.templates import (
 from nodalpulse.llm.client import compose as llm_compose
 from nodalpulse.llm.taxonomy import TEXAS_ELECTRICITY_TAXONOMY
 from nodalpulse.saved_search_predicate import PredicateBundle, build_predicate_bundle
+from nodalpulse.workers.salience import _iso_week_start, get_market_salience, SURFACE_FLOOR
 from nodalpulse.settings import settings
 from nodalpulse.storage import r2
 from nodalpulse.zone_lookup import ilike_patterns_for_zones
@@ -74,6 +75,36 @@ COMPOSER_MODEL = "claude-sonnet-4-6"
 COMPOSER_VERSION = "1.0"
 PROMPT_VER = "1.0"
 _DISCOVERY_GATE_MARKETS = {"ferc", "pjm", "caiso", "cpuc"}
+
+# Maps source slugs (saved_search.query.markets) → salience market codes.
+# CAISO/PJM slugs also pull FERC salience (broad FERC discovery corpus).
+_SLUG_TO_SAL_MARKET: dict[str, str] = {
+    "puct":       "PUCT",
+    "ercot":      "ERCOT",
+    "ercot-nprr": "ERCOT",
+    "ercot-pgrr": "ERCOT",
+    "ercot-mprr": "ERCOT",
+    "ercot-mn":   "ERCOT",
+    "pjm":        "PJM",
+    "imm":        "PJM",
+    "caiso":      "CAISO",
+    "cpuc":       "CAISO",
+    "ferc":       "FERC",
+}
+_CAISO_PJM_SLUGS = {"pjm", "imm", "caiso", "cpuc"}
+
+
+def _salience_markets_for_bundle(bundle: PredicateBundle) -> list[str]:
+    """Map bundle.market_slugs to salience market codes (deduped, sorted)."""
+    slugs = set(bundle.market_slugs or [])
+    markets: set[str] = set()
+    for slug in slugs:
+        sal = _SLUG_TO_SAL_MARKET.get(slug)
+        if sal:
+            markets.add(sal)
+    if slugs & _CAISO_PJM_SLUGS:
+        markets.add("FERC")
+    return sorted(markets)
 
 # Strict citation regex — hallucinated citations that don't match are dropped.
 _CITATION_RE = re.compile(
@@ -1009,6 +1040,25 @@ async def handle_compose_brief(payload: dict) -> dict:
     except Exception:
         logger.warning("compose-brief: market_events query failed — omitting calendar")
 
+    # Salience section — top-1 per market above SURFACE_FLOOR (email: compact)
+    salience_items: list[dict] = []
+    try:
+        sal_markets = (
+            _salience_markets_for_bundle(bundle) if filters_active else ["PUCT", "ERCOT"]
+        )
+        if sal_markets:
+            week_start = _iso_week_start(brief_date)
+            sal_all = await get_market_salience(sal_markets, week_start)
+            seen_sal_markets: set[str] = set()
+            for row in sal_all:
+                if row["market"] not in seen_sal_markets and row.get("headline"):
+                    seen_sal_markets.add(row["market"])
+                    salience_items.append(row)
+    except Exception:
+        logger.warning(
+            "compose-brief: salience query failed — omitting section user=%s", user_id
+        )
+
     # Discovery section — entity mentions within the brief window
     discovery_hits: list[dict] = []
     if _run_discovery:
@@ -1038,6 +1088,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         filters_active=filters_active,
         calendar_events=pjm_calendar,
         discovery_hits=discovery_hits,
+        salience_items=salience_items,
     )
     text_content = build_brief_text(
         brief_date=brief_date,
@@ -1047,6 +1098,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         unsubscribe_url=unsubscribe_url,
         composer_version=COMPOSER_VERSION,
         discovery_hits=discovery_hits,
+        salience_items=salience_items,
     )
 
     # Upload HTML + text to R2
