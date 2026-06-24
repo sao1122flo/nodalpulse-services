@@ -85,7 +85,13 @@ def _protest_notice_badge(url: str | None) -> str:
 
 
 def _render_item(item: dict, app_url: str, brief_date: date) -> str:
-    filing_url = item.get("source_url") or f"{app_url}/filing/{item['filing_id']}"
+    _source = item.get("source_url")
+    _docket = item.get("docket_number")
+    filing_url = (
+        _source if _source
+        else f"{app_url}/dockets/{_docket}" if _docket
+        else f"{app_url}/dockets"
+    )
     dl_badge = _deadline_badge(item.get("nearest_deadline_date"), brief_date, "Deadline")
     eff_badge = _deadline_badge(item.get("nearest_effective_date"), brief_date, "Effective")
     protest_badge = _protest_notice_badge(item.get("protest_notice_url"))
