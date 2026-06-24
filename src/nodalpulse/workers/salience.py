@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 MIN_DOC_WEIGHT = 20   # gate: docket must have at least one filing of this weight
-SURFACE_FLOOR  = 100  # min score to display; below this → "Quiet week" on surfaces
+SURFACE_FLOOR  = 50   # min score to display; below this → "Quiet week" on surfaces
 TOP_N = 3
 HEADLINE_PROMPT_VER = "1.0"
 
