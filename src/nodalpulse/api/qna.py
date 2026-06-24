@@ -62,6 +62,15 @@ _QNA_TOOL = {
                             "maxLength": 120,
                             "description": "One-line note on why this filing is relevant.",
                         },
+                        "snippet": {
+                            "type": "string",
+                            "maxLength": 300,
+                            "description": "Verbatim sentence or short passage from the filing context that directly supports this citation. Quote exactly as it appears in the context.",
+                        },
+                        "page_number": {
+                            "type": "integer",
+                            "description": "Page number where the cited text appears, if visible in the context (e.g. 'Page 3' or 'p.3'). Omit if not available.",
+                        },
                     },
                     "required": ["filing_id", "relevance_note"],
                     "additionalProperties": False,
@@ -382,6 +391,8 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
             "source_url": f["source_url"],
             "docket_number": f["docket_number"],
             "relevance_note": c.get("relevance_note", ""),
+            "snippet": c.get("snippet") or None,
+            "page_number": c.get("page_number") or None,
         })
 
     u = response.usage

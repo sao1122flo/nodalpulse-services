@@ -101,7 +101,10 @@ def _render_item(item: dict, app_url: str, brief_date: date) -> str:
         f'  </div>\n'
         f'  {badges_html}'
         f'  <div class="item-summary">{_esc(item["summary"])}</div>\n'
-        f'  <a href="{filing_url}" class="citation">{_esc(item["citation"])}</a>\n'
+        f'  <a href="{filing_url}" class="citation"'
+        f' data-filing-id="{_esc(item["filing_id"])}"'
+        f' data-docket-number="{_esc(item.get("docket_number") or "")}">'
+        f'{_esc(item["citation"])}</a>\n'
         f'</div>\n'
     )
 
