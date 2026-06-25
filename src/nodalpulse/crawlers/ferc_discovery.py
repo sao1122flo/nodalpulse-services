@@ -87,7 +87,7 @@ class DiscoveryItem:
     description: str
     filer_names: list[str]
     docket_numbers: list[str]
-    filed_at: str    # YYYY-MM-DD
+    filed_at: date
     doc_type: str
 
 
@@ -230,7 +230,7 @@ def _item_to_discovery(raw: dict, since_date: date) -> DiscoveryItem | None:
         description=description,
         filer_names=filer_names,
         docket_numbers=docket_numbers,
-        filed_at=filed.isoformat(),
+        filed_at=filed,
         doc_type=_infer_doc_type(raw),
     )
 

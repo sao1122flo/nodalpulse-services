@@ -144,8 +144,8 @@ async def get_discovery_hits(
             """),
             {
                 "patterns": patterns,
-                "since": since_date.isoformat(),
-                "until": until_date.isoformat() if until_date else None,
+                "since": since_date,
+                "until": until_date,
                 "lim": limit,
             },
         )
