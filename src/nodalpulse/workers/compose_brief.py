@@ -422,6 +422,18 @@ def _build_citation(payload: dict, filing: dict) -> str:
     return f"[{label} {identifier}, p.1 ¶1]"
 
 
+def _disambiguate_title(title: str, payload: dict) -> str:
+    """Prepend the primary party to the title when it is absent.
+
+    Prevents PUCT titles like 'Initial Post-Hearing Brief — 59336' from
+    colliding across parties in the same docket.
+    """
+    parties = payload.get("parties") or []
+    if parties and parties[0] and parties[0].lower() not in title.lower():
+        return f"{parties[0]}: {title}"
+    return title
+
+
 def _build_composer_input(entry: dict) -> dict:
     f = entry["filing"]
     payload = _parse_payload(f.get("extraction_payload"))
@@ -441,7 +453,7 @@ def _build_composer_input(entry: dict) -> dict:
 
     return {
         "filing_id": f["filing_id"],
-        "title": f["title"],
+        "title": _disambiguate_title(f["title"], payload),
         "doc_type": f.get("doc_type", ""),
         "filed_at": filed_str,
         "claims": claims[:5],
@@ -903,7 +915,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             logger.warning("Bad citation for %s: %r — dropping", fid, citation)
             fallback_items.append({
                 "filing_id": fid,
-                "title": f["title"],
+                "title": _disambiguate_title(f["title"], p),
                 "summary": p.get("summary", "Filing summary unavailable; see source."),
                 "citation": _build_citation(p, f),
                 "doc_type": f.get("doc_type", ""),
@@ -918,7 +930,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             return
         item_dict = {
             "filing_id": fid,
-            "title": f["title"],
+            "title": _disambiguate_title(f["title"], p),
             "summary": summary,
             "citation": citation,
             "doc_type": f.get("doc_type", ""),
