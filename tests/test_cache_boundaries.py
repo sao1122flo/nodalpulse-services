@@ -168,9 +168,11 @@ async def test_compose_first_and_retry_kwargs_identical():
 
 # ── Test 3: all Sonnet system blocks exceed 1,024 tokens ─────────────────────
 
+# Live integration test — needs a REAL key. CI sets a placeholder (sk-ant-test)
+# which is truthy but 401s, so gate on the real key prefix, not mere presence.
 _needs_api_key = pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY not set — skipping real token-count test",
+    not os.environ.get("ANTHROPIC_API_KEY", "").startswith("sk-ant-api"),
+    reason="real ANTHROPIC_API_KEY not set — skipping live token-count test",
 )
 
 _SONNET_SYSTEM_CASES = [
