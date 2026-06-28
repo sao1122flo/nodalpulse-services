@@ -27,6 +27,16 @@ _TODAY = date(2026, 5, 12)
 _YESTERDAY = (_TODAY - timedelta(days=1)).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_subscriber_gating(mocker):
+    """_tick / _startup_catchup gate the FERC/CAISO/PJM crawls on DB subscriber
+    checks and enqueue salience via enqueue_idempotent. Mock both so every cron
+    test is hermetic and order-independent — the TX crawls fire regardless, and
+    no test here asserts subscriber-gated behavior."""
+    mocker.patch("nodalpulse.cron.market_has_subscribers", return_value=False)
+    mocker.patch("nodalpulse.cron.enqueue_idempotent")
+
+
 # ── Startup catch-up tests ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -80,10 +90,6 @@ async def test_tick_crawl_fires(mocker):
     mocker.patch("nodalpulse.cron.is_crawl_done_for", return_value=False)
     mock_mark_crawl = mocker.patch("nodalpulse.cron.mark_crawl_done_for")
     mock_enqueue = mocker.patch("nodalpulse.cron.enqueue")
-    # _tick gates the FERC/CAISO/PJM crawls on subscriber checks that hit the DB;
-    # mock them so the test is hermetic (TX crawls fire regardless of subscribers).
-    mocker.patch("nodalpulse.cron.market_has_subscribers", return_value=False)
-    mocker.patch("nodalpulse.cron.enqueue_idempotent")
 
     await _tick(now_ct)
 
