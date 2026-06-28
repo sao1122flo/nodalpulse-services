@@ -80,12 +80,12 @@ class PuctCrawler(BaseCrawler):
                 file_ext=_ext_from_url(row["doc_url"]),
                 metadata={
                     "control_number": row.get("control_number", ""),
-                    "item_number":    row.get("item_number", ""),
-                    "item_key":       row.get("item_key", ""),
-                    "item_type":      row.get("item_type", ""),
-                    "item_type_raw":  row.get("item_type", ""),
+                    "item_number": row.get("item_number", ""),
+                    "item_key": row.get("item_key", ""),
+                    "item_type": row.get("item_type", ""),
+                    "item_type_raw": row.get("item_type", ""),
                     "description_raw": row.get("description_raw", ""),
-                    "filer":          row.get("party", ""),
+                    "filer": row.get("party", ""),
                 },
             )
             for row in rows
@@ -124,10 +124,13 @@ class PuctCrawler(BaseCrawler):
         self, client: httpx.AsyncClient, since: date, until: date
     ) -> list[dict]:
         """L1: search → docket list. L2: per-docket filing items."""
-        resp = await client.get(SEARCH_URL, params={
-            "DateFiledFrom": since.isoformat(),
-            "DateFiledTo": until.isoformat(),
-        })
+        resp = await client.get(
+            SEARCH_URL,
+            params={
+                "DateFiledFrom": since.isoformat(),
+                "DateFiledTo": until.isoformat(),
+            },
+        )
         resp.raise_for_status()
         dockets = _parse_docket_results(resp.text)
         logger.info("PUCT: %d dockets in range", len(dockets))
@@ -136,19 +139,19 @@ class PuctCrawler(BaseCrawler):
 
         async def _fetch_items(control_number: str) -> list[dict]:
             async with sem:
-                r = await client.get(FILINGS_URL, params={
-                    "ControlNumber": control_number,
-                    "DateFiledFrom": since.isoformat(),
-                    "DateFiledTo": until.isoformat(),
-                    "ItemMatch": "0",
-                })
+                r = await client.get(
+                    FILINGS_URL,
+                    params={
+                        "ControlNumber": control_number,
+                        "DateFiledFrom": since.isoformat(),
+                        "DateFiledTo": until.isoformat(),
+                        "ItemMatch": "0",
+                    },
+                )
                 r.raise_for_status()
                 items = _parse_filing_results(r.text, control_number)
                 # Defensive client-side date filter in case server ignores date params
-                return [
-                    i for i in items
-                    if i["filed_at"] >= since.isoformat()
-                ]
+                return [i for i in items if i["filed_at"] >= since.isoformat()]
 
         item_lists = await asyncio.gather(*[_fetch_items(d["control_number"]) for d in dockets])
         return [item for sublist in item_lists for item in sublist]
@@ -161,10 +164,13 @@ class PuctCrawler(BaseCrawler):
 
         async def _fetch_docs(item: dict) -> list[dict]:
             async with sem:
-                r = await client.get(DOCUMENTS_URL, params={
-                    "controlNumber": item["control_number"],
-                    "itemNumber": item["item_number"],
-                })
+                r = await client.get(
+                    DOCUMENTS_URL,
+                    params={
+                        "controlNumber": item["control_number"],
+                        "itemNumber": item["item_number"],
+                    },
+                )
                 r.raise_for_status()
                 return [
                     {**item, "doc_url": url, "external_id": _doc_id_from_url(url)}
@@ -199,11 +205,13 @@ def _parse_docket_results(html: str) -> list[dict]:
         control_number = _cell_text(cells[0])
         if not control_number or not control_number.isdigit():
             continue
-        results.append({
-            "control_number": control_number,
-            "party": _cell_text(cells[2]) if len(cells) > 2 else "",
-            "description": _cell_text(cells[3]) if len(cells) > 3 else "",
-        })
+        results.append(
+            {
+                "control_number": control_number,
+                "party": _cell_text(cells[2]) if len(cells) > 2 else "",
+                "description": _cell_text(cells[3]) if len(cells) > 3 else "",
+            }
+        )
     return results
 
 
@@ -230,19 +238,25 @@ def _parse_filing_results(html: str, control_number: str) -> list[dict]:
 
         type_lower = description.lower()
         doc_type = next((v for k, v in _DOC_TYPE_MAP.items() if k in type_lower), "puct-filing")
-        title = f"{description} — {control_number}" if description else f"Item {item_number} — {control_number}"
+        title = (
+            f"{description} — {control_number}"
+            if description
+            else f"Item {item_number} — {control_number}"
+        )
 
-        results.append({
-            "control_number": control_number,
-            "item_number": item_number,
-            "item_key": f"{control_number}_{item_number}",
-            "filed_at": filed_at,
-            "party": party,
-            "item_type": item_type,
-            "description_raw": description,
-            "doc_type": doc_type,
-            "title": title,
-        })
+        results.append(
+            {
+                "control_number": control_number,
+                "item_number": item_number,
+                "item_key": f"{control_number}_{item_number}",
+                "filed_at": filed_at,
+                "party": party,
+                "item_type": item_type,
+                "description_raw": description,
+                "doc_type": doc_type,
+                "title": title,
+            }
+        )
     return results
 
 

@@ -2,7 +2,7 @@
 
 import logging
 import re
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime
 
 from sqlalchemy import text
 
@@ -35,7 +35,8 @@ async def get_user_exists(user_id: str) -> bool:
 async def get_active_user_ids() -> list[str]:
     """Return user IDs eligible for daily briefs (entitlement + active subscription + profile)."""
     async with AsyncSessionLocal() as session:
-        result = await session.execute(text("""
+        result = await session.execute(
+            text("""
             SELECT DISTINCT u.id::text
             FROM users u
             JOIN user_profiles up ON up.user_id = u.id
@@ -46,7 +47,8 @@ async def get_active_user_ids() -> list[str]:
                 AND s.status IN ('active', 'trialing')
                 AND (s.current_period_end IS NULL OR s.current_period_end > NOW())
             WHERE u.email_verified = true
-        """))
+        """)
+        )
         return [row[0] for row in result.fetchall()]
 
 
@@ -90,10 +92,7 @@ async def get_user_for_brief(user_id: str) -> dict | None:
         # Merge docket IDs from user_dockets junction (Phase 12a) with
         # the user_profiles array so both tracking paths are covered.
         junc = await session.execute(
-            text(
-                "SELECT docket_id::text FROM user_dockets "
-                "WHERE user_id = CAST(:uid AS uuid)"
-            ),
+            text("SELECT docket_id::text FROM user_dockets WHERE user_id = CAST(:uid AS uuid)"),
             {"uid": user_id},
         )
         junction_ids = {r[0] for r in junc.fetchall() if r[0]}
@@ -119,7 +118,9 @@ async def get_last_brief_date(user_id: str) -> date | None:
     """Most recent brief date for a user, or None if no briefs yet."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            text("SELECT MAX(date) FROM briefs WHERE user_id = CAST(:uid AS uuid) AND send_status = 'sent'"),
+            text(
+                "SELECT MAX(date) FROM briefs WHERE user_id = CAST(:uid AS uuid) AND send_status = 'sent'"
+            ),
             {"uid": user_id},
         )
         return result.scalar_one_or_none()
@@ -217,7 +218,7 @@ async def get_filings_for_brief_user(
 
 
 # Resolve forward reference used in get_filings_for_brief_user type hint
-try:
+try:  # noqa: SIM105 — optional import guard; contextlib.suppress would obscure the type-hint intent
     from nodalpulse.saved_search_predicate import PredicateBundle  # noqa: F401 (type hint only)
 except ImportError:
     pass

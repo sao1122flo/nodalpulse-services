@@ -41,8 +41,7 @@ async def send_email(
         # RFC 8058 one-click unsubscribe — required for Gmail/Yahoo bulk senders
         "headers": {
             "List-Unsubscribe": (
-                f"<{unsubscribe_url}>, "
-                f"<mailto:unsubscribe@nodalpulse.com?subject=unsubscribe>"
+                f"<{unsubscribe_url}>, <mailto:unsubscribe@nodalpulse.com?subject=unsubscribe>"
             ),
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
@@ -59,9 +58,7 @@ async def send_email(
         )
 
     if resp.status_code not in (200, 201):
-        logger.error(
-            "Brevo error %d for %s: %s", resp.status_code, to_email, resp.text[:300]
-        )
+        logger.error("Brevo error %d for %s: %s", resp.status_code, to_email, resp.text[:300])
         return None
 
     return resp.json().get("messageId")

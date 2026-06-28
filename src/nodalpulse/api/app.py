@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -20,14 +21,14 @@ from sqlalchemy import text
 
 from nodalpulse.api.auth import verify_bearer
 from nodalpulse.api.crawl_probes import probe_cpuc, probe_ferc
-from nodalpulse.db.filings import find_or_create_docket, get_source_id
-from nodalpulse.settings import settings
 from nodalpulse.api.qna import QnaRequest, handle_qna
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
 from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.db.extractions import get_filing
+from nodalpulse.db.filings import find_or_create_docket, get_source_id
 from nodalpulse.queue.pg_queue import enqueue, enqueue_idempotent
 from nodalpulse.saved_search_predicate import build_predicate_bundle
+from nodalpulse.settings import settings
 from nodalpulse.zone_lookup import ilike_patterns_for_zones
 
 logger = logging.getLogger(__name__)
@@ -87,10 +88,10 @@ def _verify_lead_token(token: str, secret: str) -> str | None:
         # structure: <email>:<expiry_unix>:<sha256_hex>
         # split from right twice so emails containing ':' are handled correctly
         last = decoded.rfind(":")
-        sig = decoded[last + 1:]
+        sig = decoded[last + 1 :]
         rest = decoded[:last]
         second = rest.rfind(":")
-        expiry_str = rest[second + 1:]
+        expiry_str = rest[second + 1 :]
         email = rest[:second]
         payload = f"{email}:{expiry_str}"
         expected = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -135,10 +136,12 @@ async def public_record_index() -> JSONResponse:
         )
         rows = result.mappings().all()
 
-    return JSONResponse([
-        {"market": r["market"], "date": str(r["date"]), "item_count": r["item_count"]}
-        for r in rows
-    ])
+    return JSONResponse(
+        [
+            {"market": r["market"], "date": str(r["date"]), "item_count": r["item_count"]}
+            for r in rows
+        ]
+    )
 
 
 @app.get("/public/record")
@@ -229,22 +232,24 @@ async def public_record(
         for r in item_rows
     ]
 
-    return JSONResponse({
-        "market": market,
-        "date": day,
-        "filing_count": filing_count,
-        "items": items,
-        "deadline_count": deadline_count,
-    })
+    return JSONResponse(
+        {
+            "market": market,
+            "date": day,
+            "filing_count": filing_count,
+            "items": items,
+            "deadline_count": deadline_count,
+        }
+    )
 
 
 class LeadRequest(BaseModel):
     email: str
     name: str
-    title: str                  # job title / cargo
+    title: str  # job title / cargo
     market: str | None = None
     record_date: str | None = None
-    website: str = ""           # honeypot — bots fill this; humans leave it blank
+    website: str = ""  # honeypot — bots fill this; humans leave it blank
 
 
 @app.post("/public/lead")
@@ -259,7 +264,7 @@ async def capture_lead(body: LeadRequest, request: Request) -> JSONResponse:
         # Honeypot triggered — silently succeed so bots think they won
         return JSONResponse({"ok": True, "token": ""})
 
-    client_ip = (request.client.host if request.client else "unknown")
+    client_ip = request.client.host if request.client else "unknown"
     if not _check_lead_rate(client_ip):
         return JSONResponse({"error": "too_many_requests"}, status_code=429)
 
@@ -281,10 +286,8 @@ async def capture_lead(body: LeadRequest, request: Request) -> JSONResponse:
 
     parsed_record_date: date | None = None
     if body.record_date:
-        try:
+        with contextlib.suppress(ValueError):
             parsed_record_date = date.fromisoformat(body.record_date)
-        except ValueError:
-            pass
 
     async with AsyncSessionLocal() as session:
         await session.execute(
@@ -393,13 +396,14 @@ async def public_record_depth(
 
 # ── email endpoints ───────────────────────────────────────────────────────────
 
+
 @app.get("/unsubscribe/{user_id}", response_class=HTMLResponse)
 async def unsubscribe_get(user_id: str) -> HTMLResponse:
     """One-click unsubscribe landing page (GET renders a confirmation form)."""
-    return HTMLResponse(f"""<!DOCTYPE html>
+    return HTMLResponse("""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Unsubscribe — NodalPulse</title>
-<style>body{{font-family:sans-serif;max-width:480px;margin:80px auto;padding:0 16px;color:#44403C}}</style>
+<style>body{font-family:sans-serif;max-width:480px;margin:80px auto;padding:0 16px;color:#44403C}</style>
 </head><body>
 <h2 style="color:#18181B">Unsubscribe from NodalPulse briefs</h2>
 <p>Confirm to stop receiving daily briefs.</p>
@@ -511,7 +515,6 @@ async def trigger_crawl_ercot(body: CrawlRequest | None = None) -> JSONResponse:
     return JSONResponse({"job_id": job_id, "status": "queued"})
 
 
-
 class BriefTriggerRequest(BaseModel):
     brief_date: str | None = None  # ISO date; defaults to today
 
@@ -543,18 +546,22 @@ async def trigger_brief(body: BriefTriggerRequest | None = None) -> JSONResponse
 
     logger.info(
         "brief/trigger: date=%s enqueued=%d skipped=%d",
-        target_date, len(enqueued), len(skipped),
+        target_date,
+        len(enqueued),
+        len(skipped),
     )
-    return JSONResponse({
-        "brief_date": target_date.isoformat(),
-        "enqueued": len(enqueued),
-        "skipped": len(skipped),
-    })
+    return JSONResponse(
+        {
+            "brief_date": target_date.isoformat(),
+            "enqueued": len(enqueued),
+            "skipped": len(skipped),
+        }
+    )
 
 
 class RecomposeRequest(BaseModel):
-    user_id: str        # UUID string
-    brief_date: str     # ISO date, e.g. "2026-05-12"
+    user_id: str  # UUID string
+    brief_date: str  # ISO date, e.g. "2026-05-12"
     idempotency_key: str
 
 
@@ -576,7 +583,10 @@ async def recompose_brief(body: RecomposeRequest) -> JSONResponse:
     )
     logger.info(
         "brief/recompose: user=%s date=%s job=%s created=%s",
-        body.user_id, body.brief_date, job_id, created,
+        body.user_id,
+        body.brief_date,
+        job_id,
+        created,
     )
     status_code = 201 if created else 200
     return JSONResponse(
@@ -586,7 +596,7 @@ async def recompose_brief(body: RecomposeRequest) -> JSONResponse:
 
 
 class RefreshExtractionRequest(BaseModel):
-    filing_id: str      # UUID string
+    filing_id: str  # UUID string
     idempotency_key: str
 
 
@@ -608,7 +618,9 @@ async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
     )
     logger.info(
         "extraction/refresh: filing=%s job=%s created=%s",
-        body.filing_id, job_id, created,
+        body.filing_id,
+        job_id,
+        created,
     )
     status_code = 201 if created else 200
     return JSONResponse(
@@ -618,7 +630,7 @@ async def refresh_extraction(body: RefreshExtractionRequest) -> JSONResponse:
 
 
 class FireSavedSearchRequest(BaseModel):
-    user_id: str          # UUID string
+    user_id: str  # UUID string
     saved_search_id: str  # UUID string
 
 
@@ -683,11 +695,13 @@ async def fire_saved_search(body: FireSavedSearchRequest) -> JSONResponse:
     )
 
     if not bundle.has_implementable_predicates:
-        return JSONResponse({
-            "saved_search_id": body.saved_search_id,
-            "filing_count": 0,
-            "filings": [],
-        })
+        return JSONResponse(
+            {
+                "saved_search_id": body.saved_search_id,
+                "filing_count": 0,
+                "filings": [],
+            }
+        )
 
     until = datetime.now(UTC)
     since = until - timedelta(days=_FIRE_WINDOW_DAYS)
@@ -731,18 +745,22 @@ async def fire_saved_search(body: FireSavedSearchRequest) -> JSONResponse:
 
     logger.info(
         "saved-search/fire: user=%s search=%s found=%d",
-        body.user_id, body.saved_search_id, len(filings),
+        body.user_id,
+        body.saved_search_id,
+        len(filings),
     )
-    return JSONResponse({
-        "saved_search_id": body.saved_search_id,
-        "filing_count": len(filings),
-        "filings": filings,
-    })
+    return JSONResponse(
+        {
+            "saved_search_id": body.saved_search_id,
+            "filing_count": len(filings),
+            "filings": filings,
+        }
+    )
 
 
 class RefreshDocketRequest(BaseModel):
     docket_number: str
-    user_id: str         # advisory — bearer token is the security boundary
+    user_id: str  # advisory — bearer token is the security boundary
     max_filings: int = _REFRESH_DOCKET_MAX_FILINGS
 
 
@@ -771,7 +789,9 @@ async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
         if recent >= _REFRESH_DOCKET_HOURLY_CAP:
             logger.warning(
                 "refresh-docket rate limit hit: user=%s docket=%s queued_last_hour=%d",
-                body.user_id, body.docket_number, recent,
+                body.user_id,
+                body.docket_number,
+                recent,
             )
             return JSONResponse(
                 {"error": "rate_limit_exceeded", "queued_last_hour": recent},
@@ -819,27 +839,33 @@ async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
 
     logger.info(
         "refresh-docket user=%s docket=%s found=%d already_extracted=%d enqueued=%d",
-        body.user_id, body.docket_number, len(rows), already_extracted, queued,
+        body.user_id,
+        body.docket_number,
+        len(rows),
+        already_extracted,
+        queued,
     )
-    return JSONResponse({
-        "docket_number": body.docket_number,
-        "queued": queued,
-        "already_extracted": already_extracted,
-    })
+    return JSONResponse(
+        {
+            "docket_number": body.docket_number,
+            "queued": queued,
+            "already_extracted": already_extracted,
+        }
+    )
 
 
 # ── On-demand crawl ───────────────────────────────────────────────────────────
 
 _ON_DEMAND_MAX_FILINGS = int(os.environ.get("ON_DEMAND_MAX_FILINGS", "30"))
-_ON_DEMAND_SINCE       = os.environ.get("ON_DEMAND_SINCE", "2020-01-01")
-_ON_DEMAND_RATE_CAP    = int(os.environ.get("ON_DEMAND_USER_HOURLY_CAP", "3"))
-_ON_DEMAND_ALLOWED     = frozenset({"cpuc", "ferc"})
+_ON_DEMAND_SINCE = os.environ.get("ON_DEMAND_SINCE", "2020-01-01")
+_ON_DEMAND_RATE_CAP = int(os.environ.get("ON_DEMAND_USER_HOURLY_CAP", "3"))
+_ON_DEMAND_ALLOWED = frozenset({"cpuc", "ferc"})
 
 
 class OnDemandCrawlRequest(BaseModel):
-    source_slug: str    # "cpuc" | "ferc"
+    source_slug: str  # "cpuc" | "ferc"
     proceeding_id: str  # e.g. "A2508008", "EL25-49"
-    user_id: str        # advisory — bearer token is the security boundary
+    user_id: str  # advisory — bearer token is the security boundary
 
 
 @app.post("/crawl/on-demand", dependencies=[Depends(verify_bearer)])
@@ -877,7 +903,10 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
     if recent >= _ON_DEMAND_RATE_CAP:
         logger.warning(
             "crawl-on-demand rate limit: user=%s source=%s proceeding=%s recent_hour=%d",
-            body.user_id, body.source_slug, body.proceeding_id, recent,
+            body.user_id,
+            body.source_slug,
+            body.proceeding_id,
+            recent,
         )
         return JSONResponse({"error": "rate_limit_exceeded", "retry_after": 3600}, status_code=429)
 
@@ -890,7 +919,9 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
     if not found:
         logger.info(
             "crawl-on-demand: not found — source=%s proceeding=%s user=%s",
-            body.source_slug, body.proceeding_id, body.user_id,
+            body.source_slug,
+            body.proceeding_id,
+            body.user_id,
         )
         return JSONResponse({"found": 0, "valid": False})
 
@@ -912,28 +943,33 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
     if body.source_slug == "cpuc":
         job_payload = {
             "proc_numbers": [body.proceeding_id],
-            "since":        _ON_DEMAND_SINCE,
-            "max_filings":  _ON_DEMAND_MAX_FILINGS,
-            "user_id":      body.user_id,
+            "since": _ON_DEMAND_SINCE,
+            "max_filings": _ON_DEMAND_MAX_FILINGS,
+            "user_id": body.user_id,
         }
     else:
         job_payload = {
             "docket_numbers": [body.proceeding_id],
-            "since":          _ON_DEMAND_SINCE,
-            "max_filings":    _ON_DEMAND_MAX_FILINGS,
-            "user_id":        body.user_id,
+            "since": _ON_DEMAND_SINCE,
+            "max_filings": _ON_DEMAND_MAX_FILINGS,
+            "user_id": body.user_id,
         }
 
     await enqueue(job_kind, job_payload, priority=7)
 
     logger.info(
         "crawl-on-demand: enqueued %s for proceeding=%s user=%s found=%d docket_id=%s",
-        job_kind, body.proceeding_id, body.user_id, found, docket_id,
+        job_kind,
+        body.proceeding_id,
+        body.user_id,
+        found,
+        docket_id,
     )
     return JSONResponse({"found": found, "valid": True, "docket_id": docket_id})
 
 
 # ── Q&A ───────────────────────────────────────────────────────────────────────
+
 
 @app.post("/qna", dependencies=[Depends(verify_bearer)])
 async def qna(body: QnaRequest) -> JSONResponse:
@@ -947,6 +983,7 @@ async def qna(body: QnaRequest) -> JSONResponse:
 
 
 # ── Q&A usage ─────────────────────────────────────────────────────────────────
+
 
 @app.get("/qna/usage", dependencies=[Depends(verify_bearer)])
 async def qna_usage(user_id: str) -> JSONResponse:
@@ -967,6 +1004,7 @@ async def qna_usage(user_id: str) -> JSONResponse:
 
 
 # ── brief history export ──────────────────────────────────────────────────────
+
 
 class BriefHistoryExportRequest(BaseModel):
     user_id: str
@@ -989,6 +1027,7 @@ async def brief_history_export(body: BriefHistoryExportRequest) -> JSONResponse:
 
 
 # ── admin: job inspection and purge ──────────────────────────────────────────
+
 
 @app.get("/admin/jobs", dependencies=[Depends(verify_bearer)])
 async def admin_jobs_inspect(kind: str = "extract", status: str = "pending") -> JSONResponse:
@@ -1053,6 +1092,7 @@ async def admin_jobs_purge(body: PurgeJobsRequest) -> JSONResponse:
 
 # ── admin: LLM cost aggregations ─────────────────────────────────────────────
 
+
 @app.get("/admin/llm-costs", dependencies=[Depends(verify_bearer)])
 async def llm_costs(days: int = 7) -> JSONResponse:
     """Daily LLM cost aggregations by pipeline stage and model.
@@ -1095,30 +1135,32 @@ async def llm_costs(days: int = 7) -> JSONResponse:
     rows = by_day_result.mappings().all()
     totals_row = totals_result.mappings().first()
 
-    return JSONResponse({
-        "range": {
-            "from": (date.today() - timedelta(days=days - 1)).isoformat(),
-            "to": date.today().isoformat(),
-        },
-        "totals": {
-            "cost_usd": float(totals_row["cost_usd"] or 0) if totals_row else 0.0,
-            "calls": int(totals_row["calls"] or 0) if totals_row else 0,
-        },
-        "by_day": [
-            {
-                "day": str(row["day"]),
-                "stage": row["stage"],
-                "model": row["model"],
-                "pricing_version": row["pricing_version"],
-                "calls": row["calls"],
-                "input_tokens": row["input_tokens"],
-                "output_tokens": row["output_tokens"],
-                "cache_read_input_tokens": row["cache_read_input_tokens"],
-                "cost_usd": float(row["cost_usd"] or 0),
-            }
-            for row in rows
-        ],
-    })
+    return JSONResponse(
+        {
+            "range": {
+                "from": (date.today() - timedelta(days=days - 1)).isoformat(),
+                "to": date.today().isoformat(),
+            },
+            "totals": {
+                "cost_usd": float(totals_row["cost_usd"] or 0) if totals_row else 0.0,
+                "calls": int(totals_row["calls"] or 0) if totals_row else 0,
+            },
+            "by_day": [
+                {
+                    "day": str(row["day"]),
+                    "stage": row["stage"],
+                    "model": row["model"],
+                    "pricing_version": row["pricing_version"],
+                    "calls": row["calls"],
+                    "input_tokens": row["input_tokens"],
+                    "output_tokens": row["output_tokens"],
+                    "cache_read_input_tokens": row["cache_read_input_tokens"],
+                    "cost_usd": float(row["cost_usd"] or 0),
+                }
+                for row in rows
+            ],
+        }
+    )
 
 
 # ── admin: PUCT lead scraper ──────────────────────────────────────────────────
@@ -1130,8 +1172,12 @@ async def _run_scrape(job_id: str, dockets: str) -> None:
     out_path = f"/tmp/leads-{job_id}.csv"
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "scripts/scrape_puct_commenters.py",
-            "--dockets", dockets, "--out", out_path,
+            sys.executable,
+            "scripts/scrape_puct_commenters.py",
+            "--dockets",
+            dockets,
+            "--out",
+            out_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd="/app",
@@ -1169,7 +1215,9 @@ async def get_scrape_leads(job_id: str):
         return Response(
             content=(job["csv"] or "").encode("utf-8"),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=leads-{date.today().isoformat()}.csv"},
+            headers={
+                "Content-Disposition": f"attachment; filename=leads-{date.today().isoformat()}.csv"
+            },
         )
     return JSONResponse({"status": job["status"], "error": job["error"]})
 
@@ -1192,7 +1240,9 @@ async def top_dockets(min_filers: int = 3, limit: int = 30) -> JSONResponse:
             {"min_filers": min_filers, "limit": limit},
         )
         rows = result.mappings().all()
-    return JSONResponse([
-        {"docket": r["external_id"], "title": r["title"], "uniq_filers": r["uniq_filers"]}
-        for r in rows
-    ])
+    return JSONResponse(
+        [
+            {"docket": r["external_id"], "title": r["title"], "uniq_filers": r["uniq_filers"]}
+            for r in rows
+        ]
+    )

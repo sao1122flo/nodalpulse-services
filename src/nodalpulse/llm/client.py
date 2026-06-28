@@ -49,10 +49,16 @@ _retry = retry(
 # Tuple order: (input, output, cache_write, cache_read)
 PRICING_V1: dict[str, tuple[Decimal, Decimal, Decimal, Decimal]] = {
     "claude-sonnet-4-6": (
-        Decimal("3.00"), Decimal("15.00"), Decimal("3.75"), Decimal("0.30"),
+        Decimal("3.00"),
+        Decimal("15.00"),
+        Decimal("3.75"),
+        Decimal("0.30"),
     ),
     "claude-haiku-4-5-20251001": (
-        Decimal("1.00"), Decimal("5.00"), Decimal("1.25"), Decimal("0.10"),
+        Decimal("1.00"),
+        Decimal("5.00"),
+        Decimal("1.25"),
+        Decimal("0.10"),
     ),
 }
 PRICING_VERSION = "v1-2026-05-13"
@@ -75,6 +81,7 @@ def compute_cost(usage, model: str) -> Decimal:
         + cache_r / mtok * p_cr
     ).quantize(Decimal("0.000001"))
 
+
 # ── task strong-ref pool ──────────────────────────────────────────────────────
 
 # asyncio.create_task() holds only a weak ref; GC can cancel in-flight tasks.
@@ -87,7 +94,9 @@ def _fire_and_forget(coro) -> None:
     _pending_inserts.add(t)
     t.add_done_callback(_pending_inserts.discard)
 
+
 # ── observability insert ──────────────────────────────────────────────────────
+
 
 async def _persist_llm_call(
     *,
@@ -159,13 +168,16 @@ async def _persist_llm_call(
         logger.error("llm_calls insert failed: %s", exc)
         try:
             import sentry_sdk
+
             sentry_sdk.add_breadcrumb(
                 message=f"llm_calls insert failed: {exc}", level="error", category="llm"
             )
         except Exception:
             pass
 
+
 # ── tracked wrapper ───────────────────────────────────────────────────────────
+
 
 async def tracked_messages_create(
     *,
@@ -199,17 +211,20 @@ async def tracked_messages_create(
     finally:
         latency_ms = int((time.perf_counter() - start) * 1000)
         model = anthropic_kwargs.get("model", "unknown")
-        _fire_and_forget(_persist_llm_call(
-            response=response,
-            error=error,
-            latency_ms=latency_ms,
-            pipeline_stage=pipeline_stage,
-            model=model,
-            filing_id=filing_id,
-            user_id=user_id,
-            brief_id=brief_id,
-            prompt_version=prompt_version,
-        ))
+        _fire_and_forget(
+            _persist_llm_call(
+                response=response,
+                error=error,
+                latency_ms=latency_ms,
+                pipeline_stage=pipeline_stage,
+                model=model,
+                filing_id=filing_id,
+                user_id=user_id,
+                brief_id=brief_id,
+                prompt_version=prompt_version,
+            )
+        )
+
 
 # ── tool schema for brief composition ────────────────────────────────────────
 
@@ -239,6 +254,7 @@ _COMPOSE_TOOL = {
 }
 
 # ── public API ────────────────────────────────────────────────────────────────
+
 
 @_retry
 async def classify(

@@ -121,7 +121,9 @@ class FercAdapter(MarketAdapter):
                         filings.append(filing)
                         seen_ids.add(filing.external_id)
 
-        logger.info("FercAdapter: %d new filings across %d dockets", len(filings), len(self._watched))
+        logger.info(
+            "FercAdapter: %d new filings across %d dockets", len(filings), len(self._watched)
+        )
         return filings
 
 
@@ -164,14 +166,16 @@ async def _fetch_docket(
             "dateSearches": [],
             "affiliations": [],
             "categories": [],
-            "libraries": ["Electric"],  # electric utility dockets only; avoids gas/oil pipeline noise
+            "libraries": [
+                "Electric"
+            ],  # electric utility dockets only; avoids gas/oil pipeline noise
             "classTypes": [],
             "accessionNumber": None,
             "eFiling": False,
             "resultsPerPage": _RESULTS_PER_PAGE,
             "curPage": page,
             "groupBy": "NONE",
-            "sortBy": "",   # default = filedDate DESC
+            "sortBy": "",  # default = filedDate DESC
             "allDates": True,
         }
 
@@ -181,7 +185,9 @@ async def _fetch_docket(
         total = data.get("totalHits") or 0
         items.extend(batch)
 
-        logger.info("FercAdapter: docket=%s page=%d got=%d total=%d", docket, page, len(batch), total)
+        logger.info(
+            "FercAdapter: docket=%s page=%d got=%d total=%d", docket, page, len(batch), total
+        )
 
         if len(batch) < _RESULTS_PER_PAGE or len(items) >= total:
             break
@@ -190,8 +196,13 @@ async def _fetch_docket(
         # than since_date, all remaining pages are also older — no need to fetch them.
         last_filed = _parse_filed_date(batch[-1].get("filedDate", "")) if batch else None
         if last_filed and last_filed < since_date:
-            logger.info("FercAdapter: docket=%s early-stop at page=%d (tail=%s < since=%s)",
-                        docket, page, last_filed, since_date)
+            logger.info(
+                "FercAdapter: docket=%s early-stop at page=%d (tail=%s < since=%s)",
+                docket,
+                page,
+                last_filed,
+                since_date,
+            )
             break
 
         page += 1
@@ -236,7 +247,8 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
             (t for t in transmittals if "attachment a" in t.get("fileName", "").lower()),
             transmittals[0],
         )
-        if transmittals else {}
+        if transmittals
+        else {}
     )
     ferc_file_id = primary.get("fileId", "")
 
@@ -245,9 +257,9 @@ def _item_to_filing(item: dict, since_date: date) -> RawFiling | None:
         external_id=acc,
         doc_type=_infer_doc_type(item),
         title=description,
-        source_url="",   # deferred — fetch at extraction via ferc_file_id + DownloadP8File
+        source_url="",  # deferred — fetch at extraction via ferc_file_id + DownloadP8File
         filed_at=filed.isoformat() + "T00:00:00+00:00",
-        content=b"",     # deferred — R2 upload happens after triage at extraction time
+        content=b"",  # deferred — R2 upload happens after triage at extraction time
         file_ext="pdf",
         metadata={
             "docket_numbers": docket_numbers,
@@ -286,7 +298,6 @@ def _get_author(item: dict) -> str | None:
         if aff.get("afType", "").upper() == "AUTHOR":
             return aff.get("affiliation")
     return None
-
 
 
 def _infer_doc_type(item: dict) -> str:

@@ -12,6 +12,7 @@ Each row links to /services/comm/mkt_notices/{ID}; we find the first PDF on that
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -63,17 +64,13 @@ class ErcotMarketNoticesCrawler(BaseCrawler):
 async def _scrape_listing(page, since: date) -> list[dict]:
     try:
         await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
-        try:
+        with contextlib.suppress(Exception):
             await page.wait_for_load_state("networkidle", timeout=20_000)
-        except Exception:
-            pass
         await page.wait_for_selector("table tr", timeout=60_000)
     except Exception:
         logger.exception("ERCOT MN: failed to load archives page")
-        try:
+        with contextlib.suppress(Exception):
             logger.info("ERCOT MN: page url=%s content=%s", page.url, (await page.content())[:800])
-        except Exception:
-            pass
         return []
 
     rows = await page.evaluate("""() => {
@@ -112,7 +109,12 @@ async def _scrape_listing(page, since: date) -> list[dict]:
             continue
         row["filed_at"] = filed_at
         filtered.append(row)
-    logger.info("ERCOT MN: %d rows pass since=%s filter (total on page: %d)", len(filtered), since, len(rows))
+    logger.info(
+        "ERCOT MN: %d rows pass since=%s filter (total on page: %d)",
+        len(filtered),
+        since,
+        len(rows),
+    )
     return filtered
 
 
@@ -130,10 +132,8 @@ async def _fetch_notice_document(page, row: dict) -> RawFiling | None:
     # Capture the notice body text directly from the detail page.
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        try:
+        with contextlib.suppress(Exception):
             await page.wait_for_load_state("networkidle", timeout=15_000)
-        except Exception:
-            pass
         body_text: str = await page.evaluate("""() => {
             const main = document.querySelector('main, [role=main], article, .content-area');
             return main ? main.innerText.trim() : document.body.innerText.trim();

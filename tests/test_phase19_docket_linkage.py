@@ -215,7 +215,7 @@ class TestCrawlPuctDocketWiring:
             from nodalpulse.workers.crawl import handle_crawl_puct
             await handle_crawl_puct({})
 
-        mock_find.assert_called_once_with("src-uuid", "59475", jurisdiction="PUCT")
+        mock_find.assert_called_once_with("src-uuid", "59475", jurisdiction="PUCT", title="Test — 59475")
         mock_upsert.assert_called_once()
         assert mock_upsert.call_args.kwargs.get("docket_id") == "docket-uuid-59475"
 

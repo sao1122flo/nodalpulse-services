@@ -12,6 +12,7 @@ We capture the first PDF on the detail page as the canonical document.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -76,18 +77,17 @@ async def _scrape_listing(page, since: date) -> list[dict]:
     """Load the NPRR listing and extract rows since `since`. Reuses caller's page."""
     try:
         await page.goto(LISTING_URL, wait_until="domcontentloaded", timeout=60_000)
-        # Wait for Incapsula challenge to complete and redirect to the real page
-        try:
+        # Wait for Incapsula challenge to complete and redirect to the real page.
+        # non-fatal; proceed to selector check
+        with contextlib.suppress(Exception):
             await page.wait_for_load_state("networkidle", timeout=20_000)
-        except Exception:
-            pass  # non-fatal; proceed to selector check
         await page.wait_for_selector("table tr", timeout=60_000)
     except Exception:
         logger.exception("ERCOT NPRR: failed to load listing page")
-        try:
-            logger.info("ERCOT NPRR: page url=%s content=%s", page.url, (await page.content())[:800])
-        except Exception:
-            pass
+        with contextlib.suppress(Exception):
+            logger.info(
+                "ERCOT NPRR: page url=%s content=%s", page.url, (await page.content())[:800]
+            )
         return []
 
     rows = await page.evaluate("""() => {
@@ -124,7 +124,12 @@ async def _scrape_listing(page, since: date) -> list[dict]:
             continue
         row["filed_at"] = filed_at
         filtered.append(row)
-    logger.info("ERCOT NPRR: %d rows pass since=%s filter (total on page: %d)", len(filtered), since, len(rows))
+    logger.info(
+        "ERCOT NPRR: %d rows pass since=%s filter (total on page: %d)",
+        len(filtered),
+        since,
+        len(rows),
+    )
     return filtered
 
 
@@ -184,6 +189,7 @@ async def _fetch_nprr_document(page, row: dict) -> RawFiling | None:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _clean_nprr_number(raw: str) -> str:
     """'NPRR 1287' → 'NPRR1287', 'nprr1287' → 'NPRR1287'."""

@@ -15,8 +15,9 @@ from datetime import date, timedelta
 import httpx
 
 from nodalpulse.crawlers.cpuc import (
-    _FORM_URL,
     _HEADERS as _CPUC_HEADERS,
+)
+from nodalpulse.crawlers.cpuc import (
     _NUM_RESULTS_RE,
     _PROC_VALID_RE,
     _init_session,
@@ -25,7 +26,11 @@ from nodalpulse.crawlers.cpuc import (
 )
 from nodalpulse.crawlers.ferc import (
     _HEADERS as _FERC_HEADERS,
+)
+from nodalpulse.crawlers.ferc import (
     _SEARCH_URL as _FERC_SEARCH_URL,
+)
+from nodalpulse.crawlers.ferc import (
     _normalize_docket,
 )
 

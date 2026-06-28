@@ -10,12 +10,10 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from nodalpulse.api.auth import verify_bearer
 from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.llm.client import compute_cost, tracked_messages_create
 from nodalpulse.saved_search_predicate import build_predicate_bundle
@@ -163,6 +161,7 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
     if used_today >= body.limit_per_day:
         # Compute next CT midnight in UTC
         from zoneinfo import ZoneInfo
+
         ct = ZoneInfo("America/Chicago")
         now_ct = datetime.now(ct)
         next_midnight_ct = (now_ct + timedelta(days=1)).replace(
@@ -374,8 +373,10 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
     if float(cost) > _QNA_COST_WARN_THRESHOLD:
         logger.warning(
             "qna cost_warn user=%s cost=%.4f tokens_in=%d tokens_out=%d",
-            body.user_id, float(cost),
-            response.usage.input_tokens, response.usage.output_tokens,
+            body.user_id,
+            float(cost),
+            response.usage.input_tokens,
+            response.usage.output_tokens,
         )
 
     # ── Resolve citations ────────────────────────────────────────────────────
@@ -385,37 +386,43 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
         f = filing_index.get(fid)
         if not f:
             continue
-        citations.append({
-            "filing_id": fid,
-            "title": f["title"],
-            "source_url": f["source_url"],
-            "docket_number": f["docket_number"],
-            "relevance_note": c.get("relevance_note", ""),
-            "snippet": c.get("snippet") or None,
-            "page_number": c.get("page_number") or None,
-        })
+        citations.append(
+            {
+                "filing_id": fid,
+                "title": f["title"],
+                "source_url": f["source_url"],
+                "docket_number": f["docket_number"],
+                "relevance_note": c.get("relevance_note", ""),
+                "snippet": c.get("snippet") or None,
+                "page_number": c.get("page_number") or None,
+            }
+        )
 
     u = response.usage
     logger.info(
         "qna user=%s conv=%s in=%d out=%d cache_read=%d cache_write=%d cost=%.4f",
-        body.user_id, conversation_id,
-        u.input_tokens, u.output_tokens,
+        body.user_id,
+        conversation_id,
+        u.input_tokens,
+        u.output_tokens,
         getattr(u, "cache_read_input_tokens", 0),
         getattr(u, "cache_creation_input_tokens", 0),
         float(cost),
     )
 
-    return JSONResponse({
-        "answer": answer,
-        "citations": citations,
-        "conversation_id": conversation_id,
-        "tokens_used": {
-            "input": u.input_tokens,
-            "output": u.output_tokens,
-            "cache_read": getattr(u, "cache_read_input_tokens", 0),
-            "cache_creation": getattr(u, "cache_creation_input_tokens", 0),
-        },
-        "cost_estimate": float(cost),
-        "used_today": used_today + 1,
-        "limit_per_day": body.limit_per_day,
-    })
+    return JSONResponse(
+        {
+            "answer": answer,
+            "citations": citations,
+            "conversation_id": conversation_id,
+            "tokens_used": {
+                "input": u.input_tokens,
+                "output": u.output_tokens,
+                "cache_read": getattr(u, "cache_read_input_tokens", 0),
+                "cache_creation": getattr(u, "cache_creation_input_tokens", 0),
+            },
+            "cost_estimate": float(cost),
+            "used_today": used_today + 1,
+            "limit_per_day": body.limit_per_day,
+        }
+    )

@@ -118,9 +118,7 @@ class PredicateBundle:
                 "OR f.filer ILIKE ANY(:text_patterns) THEN 1 ELSE 0 END"
             )
         if self.zone_filer_patterns:
-            cases.append(
-                "CASE WHEN f.filer ILIKE ANY(:zone_patterns) THEN 1 ELSE 0 END"
-            )
+            cases.append("CASE WHEN f.filer ILIKE ANY(:zone_patterns) THEN 1 ELSE 0 END")
 
         return " + ".join(cases) if cases else "0"
 
@@ -162,7 +160,7 @@ def build_predicate_bundle(
     for ss in saved_searches:
         query = _parse_query(ss.get("query"))
 
-        for slug in (query.get("markets") or []):
+        for slug in query.get("markets") or []:
             if slug:
                 market_slugs.add(slug)
 
@@ -174,8 +172,7 @@ def build_predicate_bundle(
         if tags:
             noop_tag_count += len(tags)
             logger.info(
-                "predicate_noop saved_search=%s tags=%r "
-                "(tag filtering deferred to Prompt 3.5)",
+                "predicate_noop saved_search=%s tags=%r (tag filtering deferred to Prompt 3.5)",
                 ss.get("id", "?"),
                 tags,
             )

@@ -23,7 +23,7 @@ import hashlib
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import date, datetime, timezone, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import httpx
@@ -49,17 +49,17 @@ _PJM_RSS_CANDIDATES = [
 # Keyword → event_type mapping for RSS title classification.
 _EVENT_TYPE_MAP: list[tuple[str, str]] = [
     ("base residual auction", "auction_milestone"),
-    ("incremental auction",   "auction_milestone"),
-    ("bra",                   "auction_milestone"),
-    ("capacity auction",      "auction_milestone"),
-    ("mrc vote",              "committee_vote"),
-    ("mc vote",               "committee_vote"),
-    ("members committee",     "committee_vote"),
-    ("markets.*reliability",  "committee_vote"),
-    ("comment deadline",      "comment_deadline"),
-    ("comment period",        "comment_deadline"),
-    ("stakeholder meeting",   "stakeholder_meeting"),
-    ("task force",            "stakeholder_meeting"),
+    ("incremental auction", "auction_milestone"),
+    ("bra", "auction_milestone"),
+    ("capacity auction", "auction_milestone"),
+    ("mrc vote", "committee_vote"),
+    ("mc vote", "committee_vote"),
+    ("members committee", "committee_vote"),
+    ("markets.*reliability", "committee_vote"),
+    ("comment deadline", "comment_deadline"),
+    ("comment period", "comment_deadline"),
+    ("stakeholder meeting", "stakeholder_meeting"),
+    ("task force", "stakeholder_meeting"),
 ]
 
 
@@ -100,7 +100,7 @@ def _parse_pub_date(raw: str) -> date | None:
     if not raw:
         return None
     try:
-        return parsedate_to_datetime(raw).astimezone(timezone.utc).date()
+        return parsedate_to_datetime(raw).astimezone(UTC).date()
     except Exception:
         pass
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"):
@@ -120,18 +120,22 @@ def _parse_rss_items(xml_bytes: bytes) -> list[dict]:
         return []
     items = []
     for item in root.findall(".//item"):
-        def text(tag: str) -> str:
+        # Bind `item` as a default so the closure captures this iteration's value
+        # (avoids B023 late-binding; text() is only called within this iteration).
+        def text(tag: str, item=item) -> str:
             el = item.find(tag)
             return (el.text or "").strip() if el is not None else ""
 
         description = text("description")
         meeting_date = _extract_meeting_date(description) or _parse_pub_date(text("pubDate"))
 
-        items.append({
-            "title":        text("title"),
-            "link":         text("link"),
-            "meeting_date": meeting_date,
-        })
+        items.append(
+            {
+                "title": text("title"),
+                "link": text("link"),
+                "meeting_date": meeting_date,
+            }
+        )
     return items
 
 
@@ -213,42 +217,42 @@ async def _ingest_pjm_rss(since_date: date) -> int:
 _RPM_MILESTONES: list[dict] = [
     # 2029/2030 delivery year — BRA expected May 2026 (3-year forward)
     {
-        "source":          "auction_calendar",
-        "event_type":      "auction_milestone",
-        "title":           "PJM Base Residual Auction — Delivery Year 2029/2030 (window opens)",
-        "event_date":      date(2026, 5, 1),
-        "estimated":       True,  # exact open date TBD in FERC filing
-        "related_docket":  "ER25-1357",
-        "source_url":      "https://www.pjm.com/markets-and-operations/rpm",
+        "source": "auction_calendar",
+        "event_type": "auction_milestone",
+        "title": "PJM Base Residual Auction — Delivery Year 2029/2030 (window opens)",
+        "event_date": date(2026, 5, 1),
+        "estimated": True,  # exact open date TBD in FERC filing
+        "related_docket": "ER25-1357",
+        "source_url": "https://www.pjm.com/markets-and-operations/rpm",
     },
     {
-        "source":          "auction_calendar",
-        "event_type":      "auction_milestone",
-        "title":           "PJM Base Residual Auction — Delivery Year 2029/2030 (results expected)",
-        "event_date":      date(2026, 5, 31),
-        "estimated":       True,
-        "related_docket":  "ER25-1357",
-        "source_url":      "https://www.pjm.com/markets-and-operations/rpm",
+        "source": "auction_calendar",
+        "event_type": "auction_milestone",
+        "title": "PJM Base Residual Auction — Delivery Year 2029/2030 (results expected)",
+        "event_date": date(2026, 5, 31),
+        "estimated": True,
+        "related_docket": "ER25-1357",
+        "source_url": "https://www.pjm.com/markets-and-operations/rpm",
     },
     # 2027/2028 Incremental Auction 3 (IRA3) — ~3rd year before delivery
     {
-        "source":          "auction_calendar",
-        "event_type":      "auction_milestone",
-        "title":           "PJM Incremental Auction 3 (IRA3) — Delivery Year 2027/2028",
-        "event_date":      date(2026, 9, 1),
-        "estimated":       True,
-        "related_docket":  None,
-        "source_url":      "https://www.pjm.com/markets-and-operations/rpm",
+        "source": "auction_calendar",
+        "event_type": "auction_milestone",
+        "title": "PJM Incremental Auction 3 (IRA3) — Delivery Year 2027/2028",
+        "event_date": date(2026, 9, 1),
+        "estimated": True,
+        "related_docket": None,
+        "source_url": "https://www.pjm.com/markets-and-operations/rpm",
     },
     # RPM parameter filing season — PJM typically files parameters ~6 months before BRA
     {
-        "source":          "auction_calendar",
-        "event_type":      "auction_milestone",
-        "title":           "PJM RPM parameter filing window — Delivery Year 2029/2030 (expected)",
-        "event_date":      date(2025, 11, 1),
-        "estimated":       True,
-        "related_docket":  "ER25-1357",
-        "source_url":      "https://elibrary.ferc.gov/eLibrary/search?q=ER25-1357",
+        "source": "auction_calendar",
+        "event_type": "auction_milestone",
+        "title": "PJM RPM parameter filing window — Delivery Year 2029/2030 (expected)",
+        "event_date": date(2025, 11, 1),
+        "estimated": True,
+        "related_docket": "ER25-1357",
+        "source_url": "https://elibrary.ferc.gov/eLibrary/search?q=ER25-1357",
     },
 ]
 

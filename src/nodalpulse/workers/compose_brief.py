@@ -27,7 +27,6 @@ When personalization is inactive (skipped onboarding / no predicates set):
 
 import json
 import logging
-import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -36,8 +35,6 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
-from nodalpulse.db.engine import AsyncSessionLocal
-from nodalpulse.db.market_events import get_market_events
 from nodalpulse.db.briefs import (
     check_eval_gate,
     get_filings_for_brief,
@@ -47,8 +44,10 @@ from nodalpulse.db.briefs import (
     insert_brief,
     mark_brief_sent,
 )
+from nodalpulse.db.discovery import get_discovery_hits, get_watched_entity_patterns
+from nodalpulse.db.engine import AsyncSessionLocal
+from nodalpulse.db.market_events import get_market_events
 from nodalpulse.email.brevo import send_email
-from nodalpulse.db.discovery import get_watched_entity_patterns, get_discovery_hits
 from nodalpulse.email.templates import (
     build_brief_html,
     build_brief_text,
@@ -58,9 +57,9 @@ from nodalpulse.email.templates import (
 from nodalpulse.llm.client import compose as llm_compose
 from nodalpulse.llm.taxonomy import TEXAS_ELECTRICITY_TAXONOMY
 from nodalpulse.saved_search_predicate import PredicateBundle, build_predicate_bundle
-from nodalpulse.workers.salience import _iso_week_start, get_market_salience, SURFACE_FLOOR
 from nodalpulse.settings import settings
 from nodalpulse.storage import r2
+from nodalpulse.workers.salience import _iso_week_start, get_market_salience
 from nodalpulse.zone_lookup import ilike_patterns_for_zones
 
 logger = logging.getLogger(__name__)
@@ -79,17 +78,17 @@ _DISCOVERY_GATE_MARKETS = {"ferc", "pjm", "caiso", "cpuc"}
 # Maps source slugs (saved_search.query.markets) → salience market codes.
 # CAISO/PJM slugs also pull FERC salience (broad FERC discovery corpus).
 _SLUG_TO_SAL_MARKET: dict[str, str] = {
-    "puct":       "PUCT",
-    "ercot":      "ERCOT",
+    "puct": "PUCT",
+    "ercot": "ERCOT",
     "ercot-nprr": "ERCOT",
     "ercot-pgrr": "ERCOT",
     "ercot-mprr": "ERCOT",
-    "ercot-mn":   "ERCOT",
-    "pjm":        "PJM",
-    "imm":        "PJM",
-    "caiso":      "CAISO",
-    "cpuc":       "CAISO",
-    "ferc":       "FERC",
+    "ercot-mn": "ERCOT",
+    "pjm": "PJM",
+    "imm": "PJM",
+    "caiso": "CAISO",
+    "cpuc": "CAISO",
+    "ferc": "FERC",
 }
 _CAISO_PJM_SLUGS = {"pjm", "imm", "caiso", "cpuc"}
 
@@ -106,19 +105,18 @@ def _salience_markets_for_bundle(bundle: PredicateBundle) -> list[str]:
         markets.add("FERC")
     return sorted(markets)
 
+
 # Strict citation regex — hallucinated citations that don't match are dropped.
-_CITATION_RE = re.compile(
-    r"\[(ERCOT|ERCOT-MN|PUCT|FERC|PJM|CAISO|CPUC|TLO)[^\]]+, p\.\d+ ¶\d+\]"
-)
+_CITATION_RE = re.compile(r"\[(ERCOT|ERCOT-MN|PUCT|FERC|PJM|CAISO|CPUC|TLO)[^\]]+, p\.\d+ ¶\d+\]")
 
 # Maps docket.jurisdiction → citation label (consistent with #86/#88 market labeling).
 _JURISDICTION_LABEL: dict[str, str] = {
-    "FERC":       "FERC",
-    "PJM-FERC":   "PJM",
+    "FERC": "FERC",
+    "PJM-FERC": "PJM",
     "CAISO-FERC": "CAISO",
-    "CPUC":       "CPUC",
-    "PUCT":       "PUCT",
-    "ERCOT":      "ERCOT",
+    "CPUC": "CPUC",
+    "PUCT": "PUCT",
+    "ERCOT": "ERCOT",
 }
 
 _COMPOSE_SYSTEM = """\
@@ -141,6 +139,7 @@ _COMPOSE_SYSTEM_FULL = _COMPOSE_SYSTEM + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY
 
 
 # ── scoring ───────────────────────────────────────────────────────────────────
+
 
 def _score_filing(filing: dict, today: date, predicate_match_count: int = 0) -> int:
     score = 0
@@ -195,6 +194,7 @@ def _score_filing(filing: dict, today: date, predicate_match_count: int = 0) -> 
 
 # ── per-docket allocation ─────────────────────────────────────────────────────
 
+
 def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
     """Return deadline fields for badge rendering in the brief email.
 
@@ -204,9 +204,9 @@ def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
       protest_notice_url     — eLibrary verify_url from a protest_notice deadline (str or None)
     """
     result: dict = {
-        "nearest_deadline_date":  None,
+        "nearest_deadline_date": None,
         "nearest_effective_date": None,
-        "protest_notice_url":     None,
+        "protest_notice_url": None,
     }
     eff = payload.get("effective_date")
     if eff:
@@ -236,9 +236,8 @@ def _deadline_badge_info(payload: dict, brief_date: date) -> dict:
         if d_str:
             try:
                 d = date.fromisoformat(str(d_str)[:10])
-                if 0 <= (d - brief_date).days <= 30:
-                    if soonest is None or d < soonest:
-                        soonest = d
+                if 0 <= (d - brief_date).days <= 30 and (soonest is None or d < soonest):
+                    soonest = d
             except ValueError:
                 pass
     if soonest:
@@ -332,13 +331,15 @@ def allocate_brief(
     for d in allocated:
         tom_count = sum(1 for e in top_of_mind if e["filing"].get("docket_id") == d)
         ext_id = allocated[d][0]["filing"].get("docket_external_id") if allocated[d] else None
-        docket_sections.append({
-            "docket_id": d,
-            "external_id": ext_id,
-            "items": list(allocated[d]),
-            "pool_total": len(docket_pools[d]) + tom_count,
-            "section_score": max(e["score"] for e in allocated[d]),
-        })
+        docket_sections.append(
+            {
+                "docket_id": d,
+                "external_id": ext_id,
+                "items": list(allocated[d]),
+                "pool_total": len(docket_pools[d]) + tom_count,
+                "section_score": max(e["score"] for e in allocated[d]),
+            }
+        )
     docket_sections.sort(key=lambda s: s["section_score"], reverse=True)
 
     return {"top_of_mind": top_of_mind, "docket_sections": docket_sections}
@@ -347,10 +348,7 @@ def allocate_brief(
 def _build_subject(top_item: dict | None, item_count: int, brief_date: date) -> str:
     if top_item and item_count > 1:
         rest = item_count - 1
-        return (
-            f"{top_item['title'][:60]} · "
-            f"{rest} more item{'s' if rest != 1 else ''}"
-        )
+        return f"{top_item['title'][:60]} · {rest} more item{'s' if rest != 1 else ''}"
     if top_item:
         return top_item["title"][:80]
     month = brief_date.strftime("%b")
@@ -358,6 +356,7 @@ def _build_subject(top_item: dict | None, item_count: int, brief_date: date) -> 
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _normalize(text: str) -> str:
     return re.sub(
@@ -405,9 +404,7 @@ def _build_citation(payload: dict, filing: dict) -> str:
 
     if doc_type == "ercot-mn":
         identifier = (
-            metadata.get("notice_id")
-            or filing.get("docket_external_id")
-            or filing["filing_id"][:8]
+            metadata.get("notice_id") or filing.get("docket_external_id") or filing["filing_id"][:8]
         )
         return f"[ERCOT-MN {identifier}, p.1 ¶1]"
 
@@ -463,6 +460,7 @@ def _build_composer_input(entry: dict) -> dict:
 
 # ── #16 hallucination filter ─────────────────────────────────────────────────
 
+
 def _is_hallucinated_summary(summary: str) -> bool:
     return summary.lower().startswith("filing summary unavailable")
 
@@ -499,6 +497,7 @@ def filter_no_claims(filings: list[dict]) -> list[dict]:
 
 
 # ── #17 dedup ─────────────────────────────────────────────────────────────────
+
 
 def _extract_item_key(f: dict) -> str | None:
     """Return item_key from filing metadata, or None if absent."""
@@ -560,23 +559,23 @@ def dedup_candidates(filings: list[dict]) -> list[dict]:
 
 # Map saved-search market slugs (user-facing) → DB source slugs
 _QD_SLUG_MAP: dict[str, str] = {
-    "texas":       "puct",
-    "california":  "caiso",
-    "pjm":         "pjm",
-    "imm":         "pjm",
-    "ferc":        "ferc",
+    "texas": "puct",
+    "california": "caiso",
+    "pjm": "pjm",
+    "imm": "pjm",
+    "ferc": "ferc",
 }
 # Canonical record-page markets (must match _INDEX_MARKETS in app.py)
 _QD_INDEX_SOURCES: frozenset[str] = frozenset({"puct", "caiso", "ferc", "pjm", "cpuc"})
 # Market landing pages (always valid fallback)
 _QD_LANDING: dict[str, str] = {
-    "puct":       "https://nodalpulse.com/texas",
+    "puct": "https://nodalpulse.com/texas",
     "ercot-nprr": "https://nodalpulse.com/texas",
-    "ercot-mn":   "https://nodalpulse.com/texas",
-    "caiso":      "https://nodalpulse.com/california",
-    "cpuc":       "https://nodalpulse.com/california",
-    "ferc":       "https://nodalpulse.com/pjm",
-    "pjm":        "https://nodalpulse.com/pjm",
+    "ercot-mn": "https://nodalpulse.com/texas",
+    "caiso": "https://nodalpulse.com/california",
+    "cpuc": "https://nodalpulse.com/california",
+    "ferc": "https://nodalpulse.com/pjm",
+    "pjm": "https://nodalpulse.com/pjm",
 }
 
 
@@ -624,6 +623,7 @@ async def _best_record_url(market_slug: str, brief_date: date) -> str:
 
 # ── main handler ──────────────────────────────────────────────────────────────
 
+
 async def handle_compose_brief(payload: dict) -> dict:
     user_id = payload["user_id"]
     brief_date = date.fromisoformat(payload["brief_date"])
@@ -647,10 +647,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             app_url=settings.app_url,
             unsubscribe_url=unsubscribe_url,
         )
-        text = (
-            f"NodalPulse pipeline maintenance {brief_date}. "
-            "Check https://nodalpulse.com/status"
-        )
+        text = f"NodalPulse pipeline maintenance {brief_date}. Check https://nodalpulse.com/status"
         await send_email(
             to_email=user["email"],
             to_name=user.get("name"),
@@ -666,23 +663,21 @@ async def handle_compose_brief(payload: dict) -> dict:
     # Window: last_brief_date+1 → brief_date (handles Fri→Mon 3-day gap correctly)
     last_date = await get_last_brief_date(user_id)
     if last_date:
-        window_since = datetime.combine(
-            last_date + timedelta(days=1), datetime.min.time()
-        ).replace(tzinfo=UTC)
+        window_since = datetime.combine(last_date + timedelta(days=1), datetime.min.time()).replace(
+            tzinfo=UTC
+        )
     else:
         window_since = datetime.combine(
             brief_date - timedelta(days=settings.max_lookback_days),
             datetime.min.time(),
         ).replace(tzinfo=UTC)
-    window_until = datetime.combine(
-        brief_date + timedelta(days=1), datetime.min.time()
-    ).replace(tzinfo=UTC)
+    window_until = datetime.combine(brief_date + timedelta(days=1), datetime.min.time()).replace(
+        tzinfo=UTC
+    )
 
     # ── Personalization ────────────────────────────────────────────────────────
 
-    zone_patterns = ilike_patterns_for_zones(
-        user.get("tracked_tags") or []
-    )
+    zone_patterns = ilike_patterns_for_zones(user.get("tracked_tags") or [])
     bundle: PredicateBundle = build_predicate_bundle(
         saved_searches=user.get("saved_searches") or [],
         tracked_docket_uuids=user.get("tracked_docket_ids") or [],
@@ -709,9 +704,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         total_corpus = len(filings)
 
         if not filings:
-            logger.info(
-                "compose-brief quiet-day (zero predicate matches) user=%s", user_id
-            )
+            logger.info("compose-brief quiet-day (zero predicate matches) user=%s", user_id)
             _primary_market = bundle.market_slugs[0] if bundle.market_slugs else "puct"
             _record_url = await _best_record_url(_primary_market, brief_date)
             html = build_quiet_day_html(
@@ -721,11 +714,7 @@ async def handle_compose_brief(payload: dict) -> dict:
                 unsubscribe_url=unsubscribe_url,
                 record_url=_record_url,
             )
-            text_body = (
-                f"Quiet day {brief_date}. "
-                "0 items match your filters. "
-                f"{_record_url}"
-            )
+            text_body = f"Quiet day {brief_date}. 0 items match your filters. {_record_url}"
             await send_email(
                 to_email=user["email"],
                 to_name=user.get("name"),
@@ -759,11 +748,7 @@ async def handle_compose_brief(payload: dict) -> dict:
                 unsubscribe_url=unsubscribe_url,
                 record_url=_record_url,
             )
-            text_body = (
-                f"Quiet day {brief_date}. "
-                "No filings in window. "
-                f"{_record_url}"
-            )
+            text_body = f"Quiet day {brief_date}. No filings in window. {_record_url}"
             await send_email(
                 to_email=user["email"],
                 to_name=user.get("name"),
@@ -784,15 +769,19 @@ async def handle_compose_brief(payload: dict) -> dict:
     # role_tags (older extractions) pass through unconditionally.
     user_roles: set[str] = set(user.get("market_roles") or [])
     if user_roles:
+
         def _role_match(f: dict) -> bool:
             tags: list[str] = (f.get("payload") or {}).get("role_tags") or []
             return not tags or bool(user_roles.intersection(tags))
+
         before_role = len(filings)
         filings = [f for f in filings if _role_match(f)]
         if len(filings) < before_role:
             logger.info(
                 "compose-brief role-filter user=%s kept=%d dropped=%d",
-                user_id, len(filings), before_role - len(filings),
+                user_id,
+                len(filings),
+                before_role - len(filings),
             )
 
     # ── Dedup + pre-allocate hallucination safety net ────────────────────────
@@ -821,9 +810,7 @@ async def handle_compose_brief(payload: dict) -> dict:
             [
                 {
                     "filing": f,
-                    "score": _score_filing(
-                        f, brief_date, int(f.get("predicate_match_count") or 0)
-                    ),
+                    "score": _score_filing(f, brief_date, int(f.get("predicate_match_count") or 0)),
                 }
                 for f in filings
             ],
@@ -844,9 +831,7 @@ async def handle_compose_brief(payload: dict) -> dict:
     for entry in all_entries:
         r2_key = entry["filing"].get("r2_key")
         if r2_key and not r2.exists(r2_key):
-            logger.warning(
-                "R2 key missing — dropping filing %s", entry["filing"]["filing_id"]
-            )
+            logger.warning("R2 key missing — dropping filing %s", entry["filing"]["filing_id"])
             continue
         r2_valid_ids.add(entry["filing"]["filing_id"])
 
@@ -862,8 +847,7 @@ async def handle_compose_brief(payload: dict) -> dict:
 
     user_prompt = (
         f"Compose brief items for {n_expected} filing(s) for {brief_date}. "
-        f"Render ALL {n_expected} filings.\n\n"
-        + json.dumps(composer_inputs, indent=2)
+        f"Render ALL {n_expected} filings.\n\n" + json.dumps(composer_inputs, indent=2)
     )
 
     # LLM compose — tool_choice forces structured output
@@ -884,8 +868,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         retry_prompt = (
             f"You MUST render ALL {n_expected} filings. "
             f"Your previous response had {len(composed)} items. "
-            f"Required filing_ids: {expected_ids}\n\n"
-            + user_prompt
+            f"Required filing_ids: {expected_ids}\n\n" + user_prompt
         )
         composed = await llm_compose(
             _COMPOSE_SYSTEM_FULL, retry_prompt, model=COMPOSER_MODEL, user_id=user_id
@@ -913,15 +896,17 @@ async def handle_compose_brief(payload: dict) -> dict:
         p = _parse_payload(f.get("extraction_payload"))
         if not _CITATION_RE.search(citation):
             logger.warning("Bad citation for %s: %r — dropping", fid, citation)
-            fallback_items.append({
-                "filing_id": fid,
-                "title": _disambiguate_title(f["title"], p),
-                "summary": p.get("summary", "Filing summary unavailable; see source."),
-                "citation": _build_citation(p, f),
-                "doc_type": f.get("doc_type", ""),
-                "source_url": f.get("source_url", ""),
-                **_deadline_badge_info(p, brief_date),
-            })
+            fallback_items.append(
+                {
+                    "filing_id": fid,
+                    "title": _disambiguate_title(f["title"], p),
+                    "summary": p.get("summary", "Filing summary unavailable; see source."),
+                    "citation": _build_citation(p, f),
+                    "doc_type": f.get("doc_type", ""),
+                    "source_url": f.get("source_url", ""),
+                    **_deadline_badge_info(p, brief_date),
+                }
+            )
             return
         summary = item_data["summary"]
         if _is_hallucinated_summary(summary):
@@ -940,7 +925,7 @@ async def handle_compose_brief(payload: dict) -> dict:
         if dest == "top_of_mind":
             sections["top_of_mind"].append(item_dict)
         elif dest.startswith("docket:"):
-            docket_items_out[dest[len("docket:"):]].append(item_dict)
+            docket_items_out[dest[len("docket:") :]].append(item_dict)
         else:
             sections["what_changed"].append(item_dict)
         valid_filing_ids.append(fid)
@@ -969,11 +954,13 @@ async def handle_compose_brief(payload: dict) -> dict:
         for sec in allocated["docket_sections"]:
             items = docket_items_out.get(sec["docket_id"], [])
             if items:
-                final_docket_sections.append({
-                    "external_id": sec["external_id"] or sec["docket_id"][:8],
-                    "pool_total": sec["pool_total"],
-                    "items": items,
-                })
+                final_docket_sections.append(
+                    {
+                        "external_id": sec["external_id"] or sec["docket_id"][:8],
+                        "pool_total": sec["pool_total"],
+                        "items": items,
+                    }
+                )
 
     item_count = (
         len(sections["top_of_mind"])
@@ -986,27 +973,48 @@ async def handle_compose_brief(payload: dict) -> dict:
         for fb in fallback_items[:10]:
             fid = fb["filing_id"]
             dest = next(
-                (e.get("_dest", "what_changed") for e in all_sections_ordered
-                 if e["filing"]["filing_id"] == fid),
+                (
+                    e.get("_dest", "what_changed")
+                    for e in all_sections_ordered
+                    if e["filing"]["filing_id"] == fid
+                ),
                 "what_changed",
             )
             if dest == "top_of_mind":
                 sections["top_of_mind"].append(fb)
             elif dest.startswith("docket:") and use_docket_sections and allocated:
-                did = dest[len("docket:"):]
+                did = dest[len("docket:") :]
                 # Find or create the section in final_docket_sections
-                sec_match = next((s for s in final_docket_sections if
-                                  s["external_id"] == next(
-                                      (x["external_id"] for x in allocated["docket_sections"]
-                                       if x["docket_id"] == did), None)), None)
+                sec_match = next(
+                    (
+                        s
+                        for s in final_docket_sections
+                        if s["external_id"]
+                        == next(
+                            (
+                                x["external_id"]
+                                for x in allocated["docket_sections"]
+                                if x["docket_id"] == did
+                            ),
+                            None,
+                        )
+                    ),
+                    None,
+                )
                 if sec_match:
                     sec_match["items"].append(fb)
                 else:
                     ext = next(
-                        (x["external_id"] or did[:8] for x in allocated["docket_sections"]
-                         if x["docket_id"] == did), did[:8]
+                        (
+                            x["external_id"] or did[:8]
+                            for x in allocated["docket_sections"]
+                            if x["docket_id"] == did
+                        ),
+                        did[:8],
                     )
-                    final_docket_sections.append({"external_id": ext, "pool_total": 1, "items": [fb]})
+                    final_docket_sections.append(
+                        {"external_id": ext, "pool_total": 1, "items": [fb]}
+                    )
             else:
                 sections["what_changed"].append(fb)
             valid_filing_ids.append(fid)
@@ -1026,8 +1034,10 @@ async def handle_compose_brief(payload: dict) -> dict:
         if final_docket_sections and final_docket_sections[0]["items"]
         else None
     )
-    top_item = first_tom or first_docket_item or (
-        sections["what_changed"][0] if sections["what_changed"] else None
+    top_item = (
+        first_tom
+        or first_docket_item
+        or (sections["what_changed"][0] if sections["what_changed"] else None)
     )
     subject = _build_subject(top_item, item_count, brief_date)
 
@@ -1055,9 +1065,7 @@ async def handle_compose_brief(payload: dict) -> dict:
     # Salience section — top-1 per market above SURFACE_FLOOR (email: compact)
     salience_items: list[dict] = []
     try:
-        sal_markets = (
-            _salience_markets_for_bundle(bundle) if filters_active else ["PUCT", "ERCOT"]
-        )
+        sal_markets = _salience_markets_for_bundle(bundle) if filters_active else ["PUCT", "ERCOT"]
         if sal_markets:
             week_start = _iso_week_start(brief_date)
             sal_all = await get_market_salience(sal_markets, week_start)
@@ -1067,9 +1075,7 @@ async def handle_compose_brief(payload: dict) -> dict:
                     seen_sal_markets.add(row["market"])
                     salience_items.append(row)
     except Exception:
-        logger.warning(
-            "compose-brief: salience query failed — omitting section user=%s", user_id
-        )
+        logger.warning("compose-brief: salience query failed — omitting section user=%s", user_id)
 
     # Discovery section — entity mentions within the brief window
     discovery_hits: list[dict] = []

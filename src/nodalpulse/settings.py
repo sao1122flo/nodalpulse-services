@@ -17,7 +17,7 @@ class Settings(BaseSettings):
         ModuleNotFoundError: No module named 'psycopg2' on boot."""
         for prefix in ("postgres://", "postgresql://"):
             if v.startswith(prefix):
-                return "postgresql+asyncpg://" + v[len(prefix):]
+                return "postgresql+asyncpg://" + v[len(prefix) :]
         return v
 
     anthropic_api_key: str
@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     app_url: str = "https://app.nodalpulse.com"
 
     services_api_key: str = ""
-    lead_token_secret: str = ""  # HMAC secret for /public/lead tokens; set PUBLIC_LEAD_TOKEN_SECRET in Railway
+    lead_token_secret: str = (
+        ""  # HMAC secret for /public/lead tokens; set PUBLIC_LEAD_TOKEN_SECRET in Railway
+    )
 
     sentry_dsn: str = ""
     log_level: str = "INFO"

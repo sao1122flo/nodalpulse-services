@@ -5,7 +5,14 @@ import os
 from datetime import date, timedelta
 
 from nodalpulse.crawlers.base import MarketAdapter
-from nodalpulse.db.filings import find_or_create_docket, get_all_tracked_docket_ids, get_last_crawled_at, get_source_id, upsert_filing, upsert_filing_dockets
+from nodalpulse.db.filings import (
+    find_or_create_docket,
+    get_all_tracked_docket_ids,
+    get_last_crawled_at,
+    get_source_id,
+    upsert_filing,
+    upsert_filing_dockets,
+)
 from nodalpulse.queue.pg_queue import enqueue
 from nodalpulse.storage import r2
 
@@ -24,15 +31,15 @@ _CONTENT_TYPES = {
 # Canonical jurisdiction string stamped on new dockets at crawl time.
 # Add new source slugs here as markets are onboarded.
 _SOURCE_JURISDICTION: dict[str, str] = {
-    "puct":       "PUCT",
+    "puct": "PUCT",
     "ercot-nprr": "ERCOT",
-    "ercot-mn":   "ERCOT",
-    "tlo":        "PUCT",
-    "ferc":       "FERC",
-    "caiso":      "CAISO-FERC",   # T5
-    "pjm":        "PJM-FERC",     # T8
-    "imm":        "PJM-FERC",     # T9 — IMM files at FERC; dockets are PJM-FERC
-    "cpuc":       "CPUC",         # #79
+    "ercot-mn": "ERCOT",
+    "tlo": "PUCT",
+    "ferc": "FERC",
+    "caiso": "CAISO-FERC",  # T5
+    "pjm": "PJM-FERC",  # T8
+    "imm": "PJM-FERC",  # T9 — IMM files at FERC; dockets are PJM-FERC
+    "cpuc": "CPUC",  # #79
 }
 
 
@@ -75,7 +82,10 @@ async def run_adapter(
     jurisdiction = _SOURCE_JURISDICTION.get(source_slug)
     logger.info(
         "run_adapter source=%s since=%s jurisdiction=%s max_filings=%s",
-        source_slug, effective_since, jurisdiction, max_filings,
+        source_slug,
+        effective_since,
+        jurisdiction,
+        max_filings,
     )
     filings = await adapter.fetch_new(since=effective_since)
     logger.info("run_adapter source=%s fetched=%d", source_slug, len(filings))
@@ -83,7 +93,9 @@ async def run_adapter(
     if max_filings is not None and len(filings) > max_filings:
         logger.info(
             "run_adapter source=%s on-demand cap: keeping %d of %d (most recent first)",
-            source_slug, max_filings, len(filings),
+            source_slug,
+            max_filings,
+            len(filings),
         )
         filings = filings[:max_filings]
 
@@ -117,8 +129,16 @@ async def run_adapter(
             # fall back to singular control_number / docket_number for older adapters.
             docket_refs: list[str] = (
                 filing.metadata.get("docket_numbers")
-                or ([filing.metadata["control_number"]] if filing.metadata.get("control_number") else [])
-                or ([filing.metadata["docket_number"]] if filing.metadata.get("docket_number") else [])
+                or (
+                    [filing.metadata["control_number"]]
+                    if filing.metadata.get("control_number")
+                    else []
+                )
+                or (
+                    [filing.metadata["docket_number"]]
+                    if filing.metadata.get("docket_number")
+                    else []
+                )
             )
 
             # Ensure every referenced docket exists; primary docket -> filings.docket_id.
@@ -128,7 +148,9 @@ async def run_adapter(
             docket_ids: list[str] = []
             for i, ref in enumerate(docket_refs):
                 created = await find_or_create_docket(
-                    source_id, ref, jurisdiction=jurisdiction,
+                    source_id,
+                    ref,
+                    jurisdiction=jurisdiction,
                     title=filing.title if i == 0 else None,
                 )
                 docket_ids.append(created)
@@ -141,13 +163,14 @@ async def run_adapter(
                     docket_refs[0],
                 )
 
-            filing_id = await upsert_filing(filing, source_id, persisted_r2_key, docket_id=docket_id)
+            filing_id = await upsert_filing(
+                filing, source_id, persisted_r2_key, docket_id=docket_id
+            )
             if filing_id:
                 if docket_ids:
                     await upsert_filing_dockets(filing_id, docket_ids)
-                should_extract = (
-                    EXTRACTION_MODE == "proactive"
-                    or (EXTRACTION_MODE == "selective" and any(did in tracked_set for did in docket_ids))
+                should_extract = EXTRACTION_MODE == "proactive" or (
+                    EXTRACTION_MODE == "selective" and any(did in tracked_set for did in docket_ids)
                 )
                 if should_extract:
                     await enqueue(

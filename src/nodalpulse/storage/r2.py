@@ -31,7 +31,9 @@ def upload(key: str, body: bytes, content_type: str = "application/octet-stream"
     )
 
 
-async def upload_async(key: str, body: bytes, content_type: str = "application/octet-stream") -> None:
+async def upload_async(
+    key: str, body: bytes, content_type: str = "application/octet-stream"
+) -> None:
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, functools.partial(upload, key, body, content_type))
 

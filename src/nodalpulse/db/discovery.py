@@ -153,6 +153,8 @@ async def get_discovery_hits(
 
     logger.info(
         "get_discovery_hits: patterns=%d since=%s hits=%d",
-        len(patterns), since_date, len(hits),
+        len(patterns),
+        since_date,
+        len(hits),
     )
     return hits
