@@ -374,10 +374,22 @@ def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
     return base + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY + _ENRICH_GUIDANCE
 
 
-_FERC_ELIBRARY_SEARCH = "https://elibrary.ferc.gov/eLibrary/search?q={docket}"
+# Per-filing FERC eLibrary deep link. FERC filing external_ids ARE the accession
+# number (YYYYMMDD-NNNN). The /search?q=<docket> form does NOT deep-link in the
+# new eLibrary SPA — it lands on an empty search page — and /docketsheet?docketNumber=
+# was tested and also fails, so we link by accession (the confirmed-working form).
+_FERC_ELIBRARY_FILELIST = "https://elibrary.ferc.gov/eLibrary/filelist?accession_number={accession}"
+_FERC_ACCESSION_RE = re.compile(r"^\d{8}-\d{3,5}$")
 
 # Sources that file exclusively with FERC — protest/comment window applies.
 _FERC_FAMILY_SOURCES = {"caiso", "pjm", "ferc", "imm"}
+
+
+def _ferc_filelist_url(accession: str | None) -> str | None:
+    """eLibrary file-list link for a FERC accession (= the filing's external_id)."""
+    if accession and _FERC_ACCESSION_RE.match(accession):
+        return _FERC_ELIBRARY_FILELIST.format(accession=accession)
+    return None
 
 
 def _enrich_deadlines(
@@ -385,6 +397,7 @@ def _enrich_deadlines(
     doc_type: str,
     filed_at: str,
     source_slug: str,
+    accession: str | None = None,
 ) -> dict:
     """Post-process extraction payload to add computed deadlines (scope B).
 
@@ -459,8 +472,8 @@ def _enrich_deadlines(
     # expedited proceedings have shorter windows than any default, so a guessed
     # estimate fails exactly in the urgent cases (scope B hard rule).
     if source_slug in _FERC_FAMILY_SOURCES and "protest_notice" not in existing_types:
-        docket = extracted.get("docket_number") or ""
-        verify_url = _FERC_ELIBRARY_SEARCH.format(docket=docket) if docket else None
+        # Link to THIS filing's accession (the order/notice that opens the window).
+        verify_url = _ferc_filelist_url(accession)
         deadlines.append({
             "type":        "protest_notice",
             "description": "Protest/comment deadline — window varies by proceeding type; see FERC Notice",
@@ -602,7 +615,7 @@ async def handle_extract(payload: dict) -> dict:
         await _write_cpuc_cross_refs(filing_id, source_id, extracted)
 
     # Deadline engine — compute/inject structured deadline entries (scope B).
-    extracted = _enrich_deadlines(extracted, doc_type, filing.get("filed_at") or "", source_slug)
+    extracted = _enrich_deadlines(extracted, doc_type, filing.get("filed_at") or "", source_slug, filing.get("external_id"))
 
     extraction_id = await insert_extraction(
         filing_id=filing_id,
