@@ -7,3 +7,17 @@ ignore = ["E501"]
 
 [lint.isort]
 known-first-party = ["nodalpulse"]
+
+[lint.flake8-bugbear]
+# FastAPI dependency markers are designed to be called in argument defaults.
+extend-immutable-calls = [
+    "fastapi.Security",
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Cookie",
+    "fastapi.Body",
+    "fastapi.Form",
+    "fastapi.File",
+]

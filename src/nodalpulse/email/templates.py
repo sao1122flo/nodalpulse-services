@@ -1,6 +1,6 @@
 """HTML and plain-text email template builders for NodalPulse daily briefs."""
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 _CHICAGO = ZoneInfo("America/Chicago")
@@ -14,13 +14,9 @@ _SECTION_LABELS = {
 
 # System-safe font stack — Outlook strips Google Fonts; this degrades gracefully
 _FONT_STACK = (
-    "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', "
-    "Roboto, Helvetica, Arial, sans-serif"
+    "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
 )
-_MONO_STACK = (
-    "'JetBrains Mono', 'Fira Code', 'Cascadia Code', "
-    "Consolas, 'Courier New', monospace"
-)
+_MONO_STACK = "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Courier New', monospace"
 
 
 def _esc(s: str) -> str:
@@ -58,10 +54,10 @@ def _deadline_badge(date_str: str | None, brief_date: date, label: str) -> str:
         date_label = d.strftime("%b %-d")
         return (
             f'<span style="display:inline-block;font-size:11px;font-weight:600;'
-            f'padding:2px 8px;border-radius:3px;background:{bg};color:{fg};'
+            f"padding:2px 8px;border-radius:3px;background:{bg};color:{fg};"
             f'margin-bottom:4px;margin-right:4px">'
-            f'{_esc(label)}: {_esc(date_label)} &middot; {_esc(days_label)}'
-            f'</span>'
+            f"{_esc(label)}: {_esc(date_label)} &middot; {_esc(days_label)}"
+            f"</span>"
         )
     except (ValueError, AttributeError):
         return ""
@@ -77,10 +73,10 @@ def _protest_notice_badge(url: str | None) -> str:
         return ""
     return (
         f'<a href="{url}" style="display:inline-block;font-size:11px;font-weight:600;'
-        f'padding:2px 8px;border-radius:3px;background:#EFF6FF;color:#1D4ED8;'
+        f"padding:2px 8px;border-radius:3px;background:#EFF6FF;color:#1D4ED8;"
         f'margin-bottom:4px;margin-right:4px;text-decoration:none">'
-        f'Protest deadline &#x2192; FERC Notice'
-        f'</a>'
+        f"Protest deadline &#x2192; FERC Notice"
+        f"</a>"
     )
 
 
@@ -88,30 +84,29 @@ def _render_item(item: dict, app_url: str, brief_date: date) -> str:
     _source = item.get("source_url")
     _docket = item.get("docket_number")
     filing_url = (
-        _source if _source
-        else f"{app_url}/dockets/{_docket}" if _docket
-        else f"{app_url}/dockets"
+        _source if _source else f"{app_url}/dockets/{_docket}" if _docket else f"{app_url}/dockets"
     )
     dl_badge = _deadline_badge(item.get("nearest_deadline_date"), brief_date, "Deadline")
     eff_badge = _deadline_badge(item.get("nearest_effective_date"), brief_date, "Effective")
     protest_badge = _protest_notice_badge(item.get("protest_notice_url"))
     badges_html = (
         f'<div style="margin:4px 0 2px">{dl_badge}{eff_badge}{protest_badge}</div>\n'
-        if (dl_badge or eff_badge or protest_badge) else ""
+        if (dl_badge or eff_badge or protest_badge)
+        else ""
     )
     return (
         f'<div class="item">\n'
         f'  <div class="item-header">\n'
         f'    <a href="{filing_url}" class="cta">Open &#x2192;</a>\n'
         f'    <div class="item-title">{_esc(item["title"])}</div>\n'
-        f'  </div>\n'
-        f'  {badges_html}'
+        f"  </div>\n"
+        f"  {badges_html}"
         f'  <div class="item-summary">{_esc(item["summary"])}</div>\n'
         f'  <a href="{filing_url}" class="citation"'
         f' data-filing-id="{_esc(item["filing_id"])}"'
         f' data-docket-number="{_esc(item.get("docket_number") or "")}">'
-        f'{_esc(item["citation"])}</a>\n'
-        f'</div>\n'
+        f"{_esc(item['citation'])}</a>\n"
+        f"</div>\n"
     )
 
 
@@ -121,9 +116,7 @@ def _render_discovery_hit(hit: dict, app_url: str) -> str:
     filers = ", ".join(filers_raw) if filers_raw else ""
     filed = str(hit.get("filed_at") or "")[:10]
     first_docket = (hit.get("docket_numbers") or [""])[0]
-    track_url = (
-        f"{app_url}/dockets?q={first_docket}" if first_docket else f"{app_url}/dockets"
-    )
+    track_url = f"{app_url}/dockets?q={first_docket}" if first_docket else f"{app_url}/dockets"
     meta = _esc(dockets)
     if filed:
         meta += f" &middot; {_esc(filed)}"
@@ -134,9 +127,9 @@ def _render_discovery_hit(hit: dict, app_url: str) -> str:
         f'  <div class="item-header">\n'
         f'    <a href="{_esc(track_url)}" class="cta">Track this &#x2192;</a>\n'
         f'    <div class="item-title">{_esc(str(hit.get("description") or "Filing"))}</div>\n'
-        f'  </div>\n'
+        f"  </div>\n"
         f'  <div class="item-summary" style="font-size:12px;color:#6B7280">{meta}</div>\n'
-        f'</div>\n'
+        f"</div>\n"
     )
 
 
@@ -269,22 +262,22 @@ def _render_salience_block(salience_items: list[dict], app_url: str) -> str:
         if m not in ordered:
             ordered.append(m)
 
-    html = "<div class=\"section-title\">MARKET HIGHLIGHTS &mdash; THIS WEEK</div>\n"
+    html = '<div class="section-title">MARKET HIGHLIGHTS &mdash; THIS WEEK</div>\n'
     for market in ordered:
         html += (
-            f"<div style=\"font-size:10px;font-weight:700;text-transform:uppercase;"
-            f"letter-spacing:0.08em;color:#6366F1;margin:10px 0 4px\">{_esc(market)}</div>\n"
+            f'<div style="font-size:10px;font-weight:700;text-transform:uppercase;'
+            f'letter-spacing:0.08em;color:#6366F1;margin:10px 0 4px">{_esc(market)}</div>\n'
         )
         for item in by_market[market]:
             docket_key = item.get("docket_key") or ""
             headline = item.get("headline") or item.get("docket_title") or docket_key
             docket_url = f"{app_url}/dockets?q={docket_key}"
             html += (
-                f"<div style=\"margin-bottom:6px;line-height:1.4\">"
-                f"<a href=\"{_esc(docket_url)}\" style=\"font-family:{_MONO_STACK};"
-                f"font-size:11px;color:#6366F1;text-decoration:none\">{_esc(docket_key)}</a>"
+                f'<div style="margin-bottom:6px;line-height:1.4">'
+                f'<a href="{_esc(docket_url)}" style="font-family:{_MONO_STACK};'
+                f'font-size:11px;color:#6366F1;text-decoration:none">{_esc(docket_key)}</a>'
                 f"&nbsp;&mdash;&nbsp;"
-                f"<span style=\"font-size:13px;color:#374151\">{_esc(headline)}</span>"
+                f'<span style="font-size:13px;color:#374151">{_esc(headline)}</span>'
                 f"</div>\n"
             )
     return html
@@ -301,30 +294,28 @@ def _render_calendar_events(events: list[dict]) -> str:
         source = _esc(str(ev.get("source", "")))
         estimated = ev.get("estimated", True)
         est_badge = (
-            " <span style=\"font-size:10px;color:#9CA3AF;font-style:italic\">(est.)</span>"
-            if estimated else ""
+            ' <span style="font-size:10px;color:#9CA3AF;font-style:italic">(est.)</span>'
+            if estimated
+            else ""
         )
         url = ev.get("source_url")
         if url:
-            linked = (
-                f"<a href=\"{_esc(url)}\" style=\"color:#374151;text-decoration:none\">"
-                f"{title}</a>"
-            )
+            linked = f'<a href="{_esc(url)}" style="color:#374151;text-decoration:none">{title}</a>'
         else:
             linked = title
         rows += (
             f"<tr>"
-            f"<td style=\"padding:4px 12px 4px 0;white-space:nowrap;color:#6B7280;"
-            f"font-size:12px;font-weight:500\">{_esc(d)}</td>"
-            f"<td style=\"padding:4px 0;font-size:13px;color:#374151\">"
+            f'<td style="padding:4px 12px 4px 0;white-space:nowrap;color:#6B7280;'
+            f'font-size:12px;font-weight:500">{_esc(d)}</td>'
+            f'<td style="padding:4px 0;font-size:13px;color:#374151">'
             f"{linked}{est_badge}</td>"
-            f"<td style=\"padding:4px 0 4px 12px;white-space:nowrap;font-size:11px;"
-            f"color:#9CA3AF\">{source}</td>"
+            f'<td style="padding:4px 0 4px 12px;white-space:nowrap;font-size:11px;'
+            f'color:#9CA3AF">{source}</td>'
             f"</tr>\n"
         )
     return (
-        "<div class=\"section-title\">PJM UPCOMING &mdash; next 30 days</div>\n"
-        "<table style=\"width:100%;border-collapse:collapse;margin-bottom:24px\">\n"
+        '<div class="section-title">PJM UPCOMING &mdash; next 30 days</div>\n'
+        '<table style="width:100%;border-collapse:collapse;margin-bottom:24px">\n'
         f"<tbody>{rows}</tbody></table>\n"
     )
 
@@ -359,13 +350,13 @@ def build_brief_html(
     banner_html = ""
     if not filters_active:
         banner_html = (
-            "<div style=\"background:#F5F3FF;border:1px solid #DDD6FE;border-radius:6px;"
-            "padding:12px 16px;margin:16px 0;font-size:13px;color:#4C1D95;line-height:1.5\">"
+            '<div style="background:#F5F3FF;border:1px solid #DDD6FE;border-radius:6px;'
+            'padding:12px 16px;margin:16px 0;font-size:13px;color:#4C1D95;line-height:1.5">'
             "<strong>Personalize this brief</strong> &mdash; "
             "Add markets, tracked dockets, or keyword searches to focus on filings that "
             "matter to you. Today&#39;s brief shows all sources."
-            f"&nbsp;<a href=\"{app_url}/settings\" "
-            "style=\"color:#6366F1;text-decoration:underline\">Add filters &rarr;</a>"
+            f'&nbsp;<a href="{app_url}/settings" '
+            'style="color:#6366F1;text-decoration:underline">Add filters &rarr;</a>'
             "</div>\n"
         )
 
@@ -376,7 +367,7 @@ def build_brief_html(
     tom_items = sections.get("top_of_mind", [])
     if tom_items:
         _lbl_tom = _esc(_SECTION_LABELS["top_of_mind"])
-        items_html += f"<div class=\"section-title\">{_lbl_tom}</div>\n"
+        items_html += f'<div class="section-title">{_lbl_tom}</div>\n'
         for item in tom_items:
             items_html += _render_item(item, app_url, brief_date)
 
@@ -388,16 +379,16 @@ def build_brief_html(
         sec_ext_id = sec["external_id"]
         docket_url = f"{app_url}/dockets/{sec_ext_id}?date={brief_date.isoformat()}"
         items_html += (
-            f"<div class=\"section-title\">"
+            f'<div class="section-title">'
             f"DOCKET {ext_id} &mdash; {pool_total} {filing_word} today"
             f"</div>\n"
         )
         for item in sec["items"]:
             items_html += _render_item(item, app_url, brief_date)
         items_html += (
-            f"<div style=\"margin:-12px 0 20px\">"
-            f"<a href=\"{docket_url}\" style=\"font-size:12px;font-weight:500;"
-            f"color:#6366F1;text-decoration:none\">"
+            f'<div style="margin:-12px 0 20px">'
+            f'<a href="{docket_url}" style="font-size:12px;font-weight:500;'
+            f'color:#6366F1;text-decoration:none">'
             f"View all {pool_total} in dashboard &#x2192;</a>"
             f"</div>\n"
         )
@@ -405,8 +396,8 @@ def build_brief_html(
     # Discovery section — entity mentions (no LLM, metadata only)
     if discovery_hits:
         items_html += (
-            "<div class=\"section-title\">Mentions of your entities</div>\n"
-            "<div style=\"font-size:12px;color:#6B7280;margin:-8px 0 12px;line-height:1.5\">"
+            '<div class="section-title">Mentions of your entities</div>\n'
+            '<div style="font-size:12px;color:#6B7280;margin:-8px 0 12px;line-height:1.5">'
             "Surfaced because a name you watch appears in these new filings. "
             "Metadata only — click “Track this” for full analysis."
             "</div>\n"
@@ -418,7 +409,7 @@ def build_brief_html(
     wc_items = sections.get("what_changed", [])
     if wc_items:
         _lbl_wc = _esc(_SECTION_LABELS["what_changed"])
-        items_html += f"<div class=\"section-title\">{_lbl_wc}</div>\n"
+        items_html += f'<div class="section-title">{_lbl_wc}</div>\n'
         for item in wc_items:
             items_html += _render_item(item, app_url, brief_date)
 
@@ -567,21 +558,31 @@ def build_brief_text(
             lines.append(f"[{market}]")
             for it in by_market[market]:
                 hl = it.get("headline") or it.get("docket_title") or it.get("docket_key") or ""
-                lines.append(f"  {it.get('docket_key','')} — {hl}")
+                lines.append(f"  {it.get('docket_key', '')} — {hl}")
             lines.append("")
 
     tom_items = sections.get("top_of_mind", [])
     if tom_items:
         lines += [f"── {_SECTION_LABELS['top_of_mind'].upper()} ──", ""]
         for item in tom_items:
-            lines += [item["title"], item["summary"], item["citation"],
-                      f"  {app_url}/filing/{item['filing_id']}", ""]
+            lines += [
+                item["title"],
+                item["summary"],
+                item["citation"],
+                f"  {app_url}/filing/{item['filing_id']}",
+                "",
+            ]
 
     for sec in docket_sections:
         lines += [f"── DOCKET {sec['external_id']} ──", ""]
         for item in sec["items"]:
-            lines += [item["title"], item["summary"], item["citation"],
-                      f"  {app_url}/filing/{item['filing_id']}", ""]
+            lines += [
+                item["title"],
+                item["summary"],
+                item["citation"],
+                f"  {app_url}/filing/{item['filing_id']}",
+                "",
+            ]
         pool_total = sec.get("pool_total", len(sec["items"]))
         lines += [
             f"  View all {pool_total} filings: "
@@ -611,14 +612,19 @@ def build_brief_text(
     if wc_items:
         lines += [f"── {_SECTION_LABELS['what_changed'].upper()} ──", ""]
         for item in wc_items:
-            lines += [item["title"], item["summary"], item["citation"],
-                      f"  {app_url}/filing/{item['filing_id']}", ""]
+            lines += [
+                item["title"],
+                item["summary"],
+                item["citation"],
+                f"  {app_url}/filing/{item['filing_id']}",
+                "",
+            ]
 
     lines += [
         "-" * 52,
         f"View in app:  {app_url}/dashboard",
         f"Unsubscribe:  {unsubscribe_url}",
-        f"Status:       https://nodalpulse.com/status",
+        "Status:       https://nodalpulse.com/status",
         f"v{composer_version}",
     ]
     return "\n".join(lines)

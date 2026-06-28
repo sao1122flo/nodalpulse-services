@@ -23,16 +23,16 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VER = "1.1"
 TRIAGE_PROMPT_VER = "1.3"  # Haiku triage prompt (relevance classification only)
-PROMPT_VER = "1.6"         # Sonnet extraction: + deadline.actor, intervention.party_role, docket_linkages
+PROMPT_VER = "1.6"  # Sonnet extraction: + deadline.actor, intervention.party_role, docket_linkages
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
 _CONTENT_TYPES: dict[str, str] = {
-    "pdf":  "application/pdf",
+    "pdf": "application/pdf",
     "html": "text/html",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "txt":  "text/plain",
-    "zip":  "application/zip",
+    "txt": "text/plain",
+    "zip": "application/zip",
 }
 
 # ZIP extraction guards — PUCT is a government source, not adversarial input,
@@ -42,12 +42,30 @@ _ZIP_MAX_UNCOMPRESSED = 200_000_000  # 200 MB total across all entries
 
 # Extensions that carry no extractable text (GIS shapefiles, images, spreadsheets).
 # Allowlist approach: only pdf/docx/txt are extracted; everything else skipped.
-_ZIP_SKIP_EXTS = frozenset({
-    "shp", "dbf", "prj", "sbn", "sbx", "shx", "cpg",
-    "xlsx", "xls", "csv",
-    "png", "jpg", "jpeg", "gif", "tif", "tiff", "bmp",
-    "zip", "7z", "rar",
-})
+_ZIP_SKIP_EXTS = frozenset(
+    {
+        "shp",
+        "dbf",
+        "prj",
+        "sbn",
+        "sbx",
+        "shx",
+        "cpg",
+        "xlsx",
+        "xls",
+        "csv",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "tif",
+        "tiff",
+        "bmp",
+        "zip",
+        "7z",
+        "rar",
+    }
+)
 
 _TRIAGE_SYSTEM = """\
 You are a document relevance classifier for US electricity market regulation.
@@ -266,7 +284,8 @@ Few-shot examples of initiative_name extraction:
   → initiative_name: "Resource Adequacy (RA)"\
 """
 
-_EXTRACT_SYSTEM_PUCT = """\
+_EXTRACT_SYSTEM_PUCT = (
+    """\
 You are an expert analyst of Texas electricity regulatory filings at the Public Utility
 Commission of Texas (PUCT), and of general FERC proceedings not covered by a market-specific
 prompt.
@@ -296,9 +315,12 @@ protests, or comments in the docket. Stance: "support" (supports relief requeste
 (opposes or protests), "comments" (neutral comments without clear position), "protest"
 (formal protest). Leave as empty array [] if not described.
 
-""" + _ROLE_TAGS_FIELD
+"""
+    + _ROLE_TAGS_FIELD
+)
 
-_EXTRACT_SYSTEM_ERCOT_NPRR = """\
+_EXTRACT_SYSTEM_ERCOT_NPRR = (
+    """\
 You are an expert analyst of ERCOT (Electric Reliability Council of Texas) protocol
 revision documents, including NPRRs, PGRRs, MPRRs, NOGRRs, SCRs, SMOGRRs, and RMGRRs.
 
@@ -321,9 +343,12 @@ hearing dates, comment deadlines, or implementation dates. source="notice" when 
 ERCOT market notice; source="filing" when stated in the revision document itself.
 Leave as empty array [] if none are explicitly stated.
 
-""" + _ROLE_TAGS_FIELD
+"""
+    + _ROLE_TAGS_FIELD
+)
 
-_EXTRACT_SYSTEM_ERCOT_MN = """\
+_EXTRACT_SYSTEM_ERCOT_MN = (
+    """\
 You are an expert analyst of ERCOT (Electric Reliability Council of Texas) Market Notices,
 which are operational communications to ERCOT market participants.
 
@@ -345,7 +370,9 @@ deadlines — include only explicitly stated actionable dates in this notice (im
 dates, outage windows, response deadlines). source is always "notice" for market notices.
 Leave as empty array [] if none are explicitly stated.
 
-""" + _ROLE_TAGS_FIELD
+"""
+    + _ROLE_TAGS_FIELD
+)
 
 
 def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
@@ -420,33 +447,37 @@ def _enrich_deadlines(
     # them. Marking estimated=True prevents these from driving the brief's +60
     # urgency score (scope B: only surface deadlines we are certain of).
     # Phase 2 will replace these with authoritative dates from the CAISO initiative page.
-    for dl in (extracted.get("deadlines") or []):
+    for dl in extracted.get("deadlines") or []:
         if not isinstance(dl, dict):
             continue
-        deadlines.append({
-            "type":        dl.get("type", "other"),
-            "description": dl.get("description", ""),
-            "date":        dl.get("date"),
-            "source":      dl.get("source", "filing"),
-            "estimated":   True,   # always — LLM date attribution is not certifiable
-            "verify_url":  dl.get("verify_url"),
-            "actor":       dl.get("actor"),   # who must act (prompt_ver 1.6+); null if absent
-        })
+        deadlines.append(
+            {
+                "type": dl.get("type", "other"),
+                "description": dl.get("description", ""),
+                "date": dl.get("date"),
+                "source": dl.get("source", "filing"),
+                "estimated": True,  # always — LLM date attribution is not certifiable
+                "verify_url": dl.get("verify_url"),
+                "actor": dl.get("actor"),  # who must act (prompt_ver 1.6+); null if absent
+            }
+        )
 
     existing_types = {d["type"] for d in deadlines}
 
     # Wrap effective_date into the deadlines array so scoring/rendering is uniform
     eff = extracted.get("effective_date")
     if eff and "effective_date" not in existing_types:
-        deadlines.append({
-            "type":        "effective_date",
-            "description": "Proposed effective date",
-            "date":        eff,
-            "source":      "filing",
-            "estimated":   False,
-            "verify_url":  None,
-            "actor":       None,
-        })
+        deadlines.append(
+            {
+                "type": "effective_date",
+                "description": "Proposed effective date",
+                "date": eff,
+                "source": "filing",
+                "estimated": False,
+                "verify_url": None,
+                "actor": None,
+            }
+        )
 
     # Rehearing — 30 days from FERC order date (FPA §313).
     # Anchors to the order, not a party filing. Not every FERC order starts this
@@ -456,15 +487,17 @@ def _enrich_deadlines(
         try:
             order_date = date.fromisoformat(filed_at[:10])
             rehearing_date = order_date + timedelta(days=30)
-            deadlines.append({
-                "type":        "rehearing",
-                "description": "Rehearing request deadline (FPA §313 — 30 days from order)",
-                "date":        rehearing_date.isoformat(),
-                "source":      "order",
-                "estimated":   False,
-                "verify_url":  None,
-                "actor":       "Any party seeking rehearing",
-            })
+            deadlines.append(
+                {
+                    "type": "rehearing",
+                    "description": "Rehearing request deadline (FPA §313 — 30 days from order)",
+                    "date": rehearing_date.isoformat(),
+                    "source": "order",
+                    "estimated": False,
+                    "verify_url": None,
+                    "actor": "Any party seeking rehearing",
+                }
+            )
         except ValueError:
             logger.warning("_enrich_deadlines: unparseable filed_at %r for rehearing", filed_at)
 
@@ -474,15 +507,17 @@ def _enrich_deadlines(
     if source_slug in _FERC_FAMILY_SOURCES and "protest_notice" not in existing_types:
         # Link to THIS filing's accession (the order/notice that opens the window).
         verify_url = _ferc_filelist_url(accession)
-        deadlines.append({
-            "type":        "protest_notice",
-            "description": "Protest/comment deadline — window varies by proceeding type; see FERC Notice",
-            "date":        None,
-            "source":      "order",
-            "estimated":   False,
-            "verify_url":  verify_url,
-            "actor":       "Intervenors / protestants",
-        })
+        deadlines.append(
+            {
+                "type": "protest_notice",
+                "description": "Protest/comment deadline — window varies by proceeding type; see FERC Notice",
+                "date": None,
+                "source": "order",
+                "estimated": False,
+                "verify_url": verify_url,
+                "actor": "Intervenors / protestants",
+            }
+        )
 
     extracted["deadlines"] = deadlines
     return extracted
@@ -503,6 +538,7 @@ async def handle_extract(payload: dict) -> dict:
     source_id: str | None = filing.get("source_id")
 
     import json as _json
+
     _meta: dict = _json.loads(filing.get("metadata_json") or "{}")
     ferc_file_id: str = _meta.get("ferc_file_id", "")
 
@@ -515,24 +551,41 @@ async def handle_extract(payload: dict) -> dict:
             content = await _fetch_source_url(source_url)
         except Exception as exc:
             if ferc_file_id:
-                logger.warning("Filing %s: source_url fetch failed (%s), falling back to DownloadP8File", filing_id, exc)
+                logger.warning(
+                    "Filing %s: source_url fetch failed (%s), falling back to DownloadP8File",
+                    filing_id,
+                    exc,
+                )
                 content = await _fetch_ferc_p8file(ferc_file_id)
                 if content == _RESTRICTED_SENTINEL:
-                    logger.warning("Filing %s: access-restricted (CEII/privileged or exhausted 401) — metadata-only", filing_id)
+                    logger.warning(
+                        "Filing %s: access-restricted (CEII/privileged or exhausted 401) — metadata-only",
+                        filing_id,
+                    )
                     return {"filing_id": filing_id, "skipped": True, "reason": "access-restricted"}
             else:
                 raise
     elif ferc_file_id:
-        logger.info("Filing %s: fetching PDF via FERC DownloadP8File fileId=%s", filing_id, ferc_file_id)
+        logger.info(
+            "Filing %s: fetching PDF via FERC DownloadP8File fileId=%s", filing_id, ferc_file_id
+        )
         content = await _fetch_ferc_p8file(ferc_file_id)
         if content == _RESTRICTED_SENTINEL:
-            logger.warning("Filing %s: access-restricted (CEII/privileged or exhausted 401) — metadata-only", filing_id)
+            logger.warning(
+                "Filing %s: access-restricted (CEII/privileged or exhausted 401) — metadata-only",
+                filing_id,
+            )
             return {"filing_id": filing_id, "skipped": True, "reason": "access-restricted"}
         if not content:
-            logger.warning("Filing %s: DownloadP8File returned empty (unrecognized format) — skipping", filing_id)
+            logger.warning(
+                "Filing %s: DownloadP8File returned empty (unrecognized format) — skipping",
+                filing_id,
+            )
             return {"filing_id": filing_id, "skipped": True, "reason": "ferc_p8file_unavailable"}
     else:
-        logger.warning("Filing %s has no r2_key, no source_url, no ferc_file_id — skipping", filing_id)
+        logger.warning(
+            "Filing %s has no r2_key, no source_url, no ferc_file_id — skipping", filing_id
+        )
         return {"filing_id": filing_id, "skipped": True, "reason": "no_content_source"}
 
     text = _extract_text(content, file_ext)
@@ -551,9 +604,16 @@ async def handle_extract(payload: dict) -> dict:
     _TRIAGE_SKIP_SOURCES = {"caiso", "cpuc", "imm"}
     if source_slug in _TRIAGE_SKIP_SOURCES:
         haiku_verdict = "relevant"
-        logger.info("Filing %s triage skipped (source=%s — curated/high-signal)", filing_id, source_slug)
+        logger.info(
+            "Filing %s triage skipped (source=%s — curated/high-signal)", filing_id, source_slug
+        )
     else:
-        triage_raw = await classify(_TRIAGE_SYSTEM, f"Document type: {doc_type}\n\n{text[:8_000]}", filing_id=filing_id, prompt_version=TRIAGE_PROMPT_VER)
+        triage_raw = await classify(
+            _TRIAGE_SYSTEM,
+            f"Document type: {doc_type}\n\n{text[:8_000]}",
+            filing_id=filing_id,
+            prompt_version=TRIAGE_PROMPT_VER,
+        )
         try:
             haiku_verdict = _parse_json(triage_raw).get("verdict", "uncertain")
         except Exception:
@@ -583,7 +643,9 @@ async def handle_extract(payload: dict) -> dict:
             f"raw/{source_slug}/{date_parts[0]}/{date_parts[1]}/"
             f"{date_parts[2]}/{external_id}.{file_ext}"
         )
-        await r2.upload_async(r2_key, content, _CONTENT_TYPES.get(file_ext, "application/octet-stream"))
+        await r2.upload_async(
+            r2_key, content, _CONTENT_TYPES.get(file_ext, "application/octet-stream")
+        )
         await update_filing_r2_key(filing_id, r2_key)
         logger.info("Materialized R2 for %s → %s", filing_id, r2_key)
 
@@ -596,7 +658,9 @@ async def handle_extract(payload: dict) -> dict:
         table_md = _extract_tables_as_markdown(content)
         if table_md:
             user_msg += f"\n\n=== STRUCTURED TABLES ===\n{table_md}"
-            logger.info("Filing %s: injecting %d chars of structured tables", filing_id, len(table_md))
+            logger.info(
+                "Filing %s: injecting %d chars of structured tables", filing_id, len(table_md)
+            )
 
     extract_raw = await llm_extract(
         _extract_system_for_doc_type(doc_type, source_slug),
@@ -615,7 +679,9 @@ async def handle_extract(payload: dict) -> dict:
         await _write_cpuc_cross_refs(filing_id, source_id, extracted)
 
     # Deadline engine — compute/inject structured deadline entries (scope B).
-    extracted = _enrich_deadlines(extracted, doc_type, filing.get("filed_at") or "", source_slug, filing.get("external_id"))
+    extracted = _enrich_deadlines(
+        extracted, doc_type, filing.get("filed_at") or "", source_slug, filing.get("external_id")
+    )
 
     extraction_id = await insert_extraction(
         filing_id=filing_id,
@@ -635,6 +701,7 @@ _PUCT_HOST = "interchange.puc.texas.gov"
 
 async def _fetch_source_url(url: str) -> bytes:
     from urllib.parse import urlparse
+
     host = urlparse(url).hostname or ""
     # PUCT Interchange uses a self-signed / problematic SSL cert; verify only for that host.
     verify = host != _PUCT_HOST
@@ -659,7 +726,7 @@ _FERC_BROWSER_HEADERS = {
     "Referer": f"{_FERC_ELIBRARY_BASE}/eLibrary/",
 }
 
-import json as _json_mod
+import json as _json_mod  # noqa: E402 — grouped with the FERC fetch helpers below
 
 # Sentinel returned by _fetch_ferc_p8file for CEII/restricted filings (403 or exhausted 401).
 # Distinct from b"" (unrecognized format) so the caller can label them differently.
@@ -691,7 +758,9 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
 
         if resp.status_code == 403:
             # 403 = CEII/privileged — permanent access restriction; no point retrying.
-            logger.warning("DownloadP8File 403 access-restricted (CEII/privileged) fileId=%s", file_id)
+            logger.warning(
+                "DownloadP8File 403 access-restricted (CEII/privileged) fileId=%s", file_id
+            )
             return _RESTRICTED_SENTINEL
 
         if resp.status_code == 401:
@@ -700,9 +769,12 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
                 wait = 5 * (attempt + 1)
                 logger.warning(
                     "DownloadP8File 401 unauthorized fileId=%s — retry %d/2 in %ds",
-                    file_id, attempt + 1, wait,
+                    file_id,
+                    attempt + 1,
+                    wait,
                 )
                 import asyncio as _asyncio
+
                 await _asyncio.sleep(wait)
                 continue
             logger.warning("DownloadP8File 401 unauthorized exhausted retries fileId=%s", file_id)
@@ -715,7 +787,9 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
         # ZIP archive: FERC commonly packages order + dissent together.
         # FERC ZIPs use extensionless filenames; identify PDFs by %PDF magic bytes.
         if resp.content[:2] == b"PK":
-            import zipfile, io
+            import io
+            import zipfile
+
             try:
                 zf = zipfile.ZipFile(io.BytesIO(resp.content))
                 pdfs = []
@@ -725,29 +799,42 @@ async def _fetch_ferc_p8file(file_id: str) -> bytes:
                         pdfs.append((name, len(data), data))
                 if pdfs:
                     best_name, best_size, best_data = max(pdfs, key=lambda x: x[1])
-                    logger.info("DownloadP8File ZIP: extracted '%s' (%d bytes) fileId=%s",
-                                best_name, best_size, file_id)
+                    logger.info(
+                        "DownloadP8File ZIP: extracted '%s' (%d bytes) fileId=%s",
+                        best_name,
+                        best_size,
+                        file_id,
+                    )
                     return best_data
                 # Check if it's a DOCX (Word document) — also a ZIP
                 if "word/document.xml" in zf.namelist():
-                    logger.info("DownloadP8File DOCX (Word) fileId=%s — returning raw for DOCX extraction", file_id)
+                    logger.info(
+                        "DownloadP8File DOCX (Word) fileId=%s — returning raw for DOCX extraction",
+                        file_id,
+                    )
                     return resp.content  # _extract_text will handle via auto-detect
-                logger.warning("DownloadP8File ZIP no PDFs/DOCX; entries=%s fileId=%s",
-                               zf.namelist()[:5], file_id)
+                logger.warning(
+                    "DownloadP8File ZIP no PDFs/DOCX; entries=%s fileId=%s",
+                    zf.namelist()[:5],
+                    file_id,
+                )
             except Exception as exc:
                 logger.warning("DownloadP8File ZIP extraction failed fileId=%s: %s", file_id, exc)
             return b""
         # Truly unrecognized format
         logger.warning(
             "DownloadP8File non-PDF: status=%d len=%d head=%r fileId=%s",
-            resp.status_code, len(resp.content), resp.content[:8], file_id,
+            resp.status_code,
+            len(resp.content),
+            resp.content[:8],
+            file_id,
         )
         return b""
 
     return b""  # unreachable; satisfies type checker
 
 
-_CPUC_PROC_NORM_RE  = re.compile(r"[.\-\s]")
+_CPUC_PROC_NORM_RE = re.compile(r"[.\-\s]")
 _CPUC_PROC_VALID_RE = re.compile(r"^[A-Z][0-9]{5,}$")
 
 
@@ -765,7 +852,11 @@ async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict
     for ref in refs:
         normalized = _CPUC_PROC_NORM_RE.sub("", str(ref).strip().upper())
         if not _CPUC_PROC_VALID_RE.match(normalized):
-            logger.warning("_write_cpuc_cross_refs: skipping malformed ref %r (normalized: %r)", ref, normalized)
+            logger.warning(
+                "_write_cpuc_cross_refs: skipping malformed ref %r (normalized: %r)",
+                ref,
+                normalized,
+            )
             continue
         try:
             docket_id = await find_or_create_docket(cpuc_source_id, normalized, jurisdiction="CPUC")
@@ -779,6 +870,7 @@ async def _write_cpuc_cross_refs(filing_id: str, source_id: str, extracted: dict
 
 
 # ── text extraction helpers ───────────────────────────────────────────────────
+
 
 def _extract_text(content: bytes, file_ext: str) -> str:
     if not content:
@@ -824,7 +916,7 @@ def _extract_tables_as_markdown(content: bytes, max_chars: int = 4000) -> str:
         with pdfplumber.open(BytesIO(content)) as pdf:
             rows: list[str] = []
             for page in pdf.pages[:40]:
-                for table in (page.extract_tables() or []):
+                for table in page.extract_tables() or []:
                     if not table:
                         continue
                     for row in table:
@@ -854,9 +946,8 @@ def _is_scanned_pdf(content: bytes) -> bool:
 def _docx_text(content: bytes) -> str:
     try:
         ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-        with zipfile.ZipFile(BytesIO(content)) as z:
-            with z.open("word/document.xml") as f:
-                tree = ET.parse(f)
+        with zipfile.ZipFile(BytesIO(content)) as z, z.open("word/document.xml") as f:
+            tree = ET.parse(f)
         texts = [node.text for node in tree.findall(".//w:t", ns) if node.text]
         return " ".join(texts)[:60_000]
     except Exception:
@@ -884,11 +975,17 @@ def _zip_text(content: bytes) -> str:
             if not entries:
                 return ""
             if len(entries) > _ZIP_MAX_ENTRIES:
-                logger.warning("ZIP has %d entries (>%d guard) — skipping", len(entries), _ZIP_MAX_ENTRIES)
+                logger.warning(
+                    "ZIP has %d entries (>%d guard) — skipping", len(entries), _ZIP_MAX_ENTRIES
+                )
                 return ""
             total_size = sum(e.file_size for e in entries)
             if total_size > _ZIP_MAX_UNCOMPRESSED:
-                logger.warning("ZIP uncompressed size %d bytes (>%d guard) — skipping", total_size, _ZIP_MAX_UNCOMPRESSED)
+                logger.warning(
+                    "ZIP uncompressed size %d bytes (>%d guard) — skipping",
+                    total_size,
+                    _ZIP_MAX_UNCOMPRESSED,
+                )
                 return ""
 
             parts: list[str] = []

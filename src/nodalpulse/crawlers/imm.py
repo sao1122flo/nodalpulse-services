@@ -26,10 +26,11 @@ on first run. Adjust WORKER_IMM_SINCE_FLOOR env var to change.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import httpx
 from selectolax.parser import HTMLParser
@@ -63,26 +64,24 @@ _DOCKET_FROM_FILENAME_RE = re.compile(
 
 # First-keyword-after-IMM_ → canonical doc_type (longest match wins)
 _TYPE_MAP: list[tuple[str, str]] = [
-    ("state_of_the_market",  "imm-state-of-market"),
-    ("state_of_market",      "imm-state-of-market"),
-    ("annual_state",         "imm-state-of-market"),
-    ("complaint",            "imm-complaint"),
-    ("answer",               "imm-answer"),
-    ("reply_brief",          "imm-brief"),
-    ("initial_brief",        "imm-brief"),
-    ("reply",                "imm-reply"),
-    ("brief",                "imm-brief"),
-    ("motion",               "imm-motion"),
-    ("petition",             "imm-petition"),
-    ("report",               "imm-report"),
-    ("comments",             "imm-comment"),
-    ("comment",              "imm-comment"),
+    ("state_of_the_market", "imm-state-of-market"),
+    ("state_of_market", "imm-state-of-market"),
+    ("annual_state", "imm-state-of-market"),
+    ("complaint", "imm-complaint"),
+    ("answer", "imm-answer"),
+    ("reply_brief", "imm-brief"),
+    ("initial_brief", "imm-brief"),
+    ("reply", "imm-reply"),
+    ("brief", "imm-brief"),
+    ("motion", "imm-motion"),
+    ("petition", "imm-petition"),
+    ("report", "imm-report"),
+    ("comments", "imm-comment"),
+    ("comment", "imm-comment"),
 ]
 
 # Env-configurable floor so operators can back-fill without touching code.
-_SINCE_FLOOR = date.fromisoformat(
-    os.environ.get("WORKER_IMM_SINCE_FLOOR", "2025-01-01")
-)
+_SINCE_FLOOR = date.fromisoformat(os.environ.get("WORKER_IMM_SINCE_FLOOR", "2025-01-01"))
 
 
 def _parse_filename(filename: str) -> tuple[str, list[str], date | None]:
@@ -110,10 +109,8 @@ def _parse_filename(filename: str) -> tuple[str, list[str], date | None]:
     dm = _DATE_RE.search(stem)
     if dm:
         raw = dm.group(1)
-        try:
+        with contextlib.suppress(ValueError):
             filed_date = date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
-        except ValueError:
-            pass
 
     # Docket IDs — may be multi-captioned in rare cases; take all matches
     dockets: list[str] = []
@@ -161,7 +158,9 @@ class ImmAdapter(MarketAdapter):
 
         logger.info(
             "ImmAdapter: since=%s returning %d filings across %d year(s)",
-            effective_since, len(filings), len(list(years)),
+            effective_since,
+            len(filings),
+            len(list(years)),
         )
         return filings
 
@@ -204,30 +203,31 @@ class ImmAdapter(MarketAdapter):
             if filed_date is None or filed_date < since_date:
                 continue
 
-            source_url = (
-                href if href.startswith("http")
-                else f"{_BASE_URL}/{year}/{filename}"
-            )
+            source_url = href if href.startswith("http") else f"{_BASE_URL}/{year}/{filename}"
             title = _make_title(filename, dockets, filed_date)
             external_id = filename[:-4] if filename.lower().endswith(".pdf") else filename
 
-            filings.append(RawFiling(
-                source_slug="imm",
-                external_id=external_id,
-                doc_type=doc_type,
-                title=title,
-                source_url=source_url,
-                filed_at=datetime.combine(filed_date, datetime.min.time()).replace(
-                    tzinfo=timezone.utc
-                ).isoformat(),
-                content=b"",  # deferred R2 — uploaded at extraction time
-                file_ext="pdf",
-                metadata={
-                    "docket_numbers": dockets,
-                    "raw_filename": filename,
-                    "year": year,
-                },
-            ))
+            filings.append(
+                RawFiling(
+                    source_slug="imm",
+                    external_id=external_id,
+                    doc_type=doc_type,
+                    title=title,
+                    source_url=source_url,
+                    filed_at=datetime.combine(filed_date, datetime.min.time())
+                    .replace(tzinfo=UTC)
+                    .isoformat(),
+                    content=b"",  # deferred R2 — uploaded at extraction time
+                    file_ext="pdf",
+                    metadata={
+                        "docket_numbers": dockets,
+                        "raw_filename": filename,
+                        "year": year,
+                    },
+                )
+            )
 
-        logger.info("ImmAdapter: year=%d parsed %d filings (since=%s)", year, len(filings), since_date)
+        logger.info(
+            "ImmAdapter: year=%d parsed %d filings (since=%s)", year, len(filings), since_date
+        )
         return filings

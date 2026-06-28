@@ -52,10 +52,7 @@ def zones_for_filer(filer: str) -> frozenset[str]:
     if not filer:
         return frozenset()
     filer_lower = filer.lower()
-    return frozenset(
-        zone for keyword, zone in _FILER_ZONE_MAP.items()
-        if keyword in filer_lower
-    )
+    return frozenset(zone for keyword, zone in _FILER_ZONE_MAP.items() if keyword in filer_lower)
 
 
 def ilike_patterns_for_zones(zones: list[str] | None) -> list[str]:
@@ -69,8 +66,4 @@ def ilike_patterns_for_zones(zones: list[str] | None) -> list[str]:
     target = frozenset(z for z in zones if z and z != "all")
     if not target:
         return []
-    return [
-        f"%{keyword}%"
-        for keyword, zone in _FILER_ZONE_MAP.items()
-        if zone in target
-    ]
+    return [f"%{keyword}%" for keyword, zone in _FILER_ZONE_MAP.items() if zone in target]

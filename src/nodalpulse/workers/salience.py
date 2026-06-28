@@ -33,10 +33,10 @@ from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import text
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.llm.client import tracked_messages_create
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -44,14 +44,14 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-MIN_DOC_WEIGHT = 20   # gate: docket must have at least one filing of this weight
-SURFACE_FLOOR  = 50   # min score to display; below this → "Quiet week" on surfaces
+MIN_DOC_WEIGHT = 20  # gate: docket must have at least one filing of this weight
+SURFACE_FLOOR = 50  # min score to display; below this → "Quiet week" on surfaces
 TOP_N = 3
 HEADLINE_PROMPT_VER = "1.0"
 
 # ── Retry (mirrors llm/client.py pattern) ────────────────────────────────────
 
-import anthropic as _anthropic
+import anthropic as _anthropic  # noqa: E402 — grouped with the retry helpers below
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -70,11 +70,11 @@ _retry = retry(
 # ── Market config ─────────────────────────────────────────────────────────────
 
 _MARKET_JURISDICTIONS: dict[str, list[str]] = {
-    "PUCT":  ["PUCT"],
+    "PUCT": ["PUCT"],
     "ERCOT": ["ERCOT"],
     "CAISO": ["CAISO-FERC", "CAISO", "CPUC"],
-    "PJM":   ["PJM-FERC", "PJM"],
-    "CPUC":  ["CPUC"],
+    "PJM": ["PJM-FERC", "PJM"],
+    "CPUC": ["CPUC"],
 }
 _DISCOVERY_MARKETS = {"FERC"}
 
@@ -266,6 +266,7 @@ def _weight_label(max_doc_weight: int) -> str:
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SalienceEntry:
     rank: int
@@ -278,6 +279,7 @@ class SalienceEntry:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _iso_week_start(d: date) -> date:
     """Return the Monday (ISO week start) for a given date."""
@@ -313,10 +315,10 @@ async def _filings_context(
         result = await session.execute(
             text(_FILINGS_CONTEXT_SQL),
             {
-                "docket_key":   docket_key,
+                "docket_key": docket_key,
                 "jurisdictions": jurisdictions,
-                "week_start":   week_start,
-                "week_end":     week_end,
+                "week_start": week_start,
+                "week_end": week_end,
             },
         )
         return [f"[{row[1]}] {row[0][:200]}" for row in result]
@@ -332,7 +334,8 @@ async def _generate_headline(
     title_part = f": {entry.docket_title[:80]}" if entry.docket_title else ""
     context_block = (
         "\n".join(f"- {line}" for line in context_lines[:3])
-        if context_lines else "(no filing descriptions available)"
+        if context_lines
+        else "(no filing descriptions available)"
     )
     user_msg = (
         f"Market: {market} | Docket: {entry.docket_key}{title_part}\n"
@@ -355,6 +358,7 @@ async def _generate_headline(
 
 # ── STEP 2: headline generation ───────────────────────────────────────────────
 
+
 async def generate_salience_headlines(
     market: str,
     week_start: date,
@@ -375,20 +379,22 @@ async def generate_salience_headlines(
     top3_changed = new_keys != old_keys
 
     # Also regenerate if any winner has no headline yet
-    any_missing = any(
-        stored.get(e.rank, {}).get("headline") is None for e in entries
-    )
+    any_missing = any(stored.get(e.rank, {}).get("headline") is None for e in entries)
 
     if not top3_changed and not any_missing:
         logger.info(
             "salience headlines: top-3 unchanged for market=%s week_start=%s — skipping Haiku",
-            market, week_start,
+            market,
+            week_start,
         )
         return
 
     logger.info(
         "salience headlines: generating for market=%s week_start=%s (changed=%s missing=%s)",
-        market, week_start, top3_changed, any_missing,
+        market,
+        week_start,
+        top3_changed,
+        any_missing,
     )
 
     jurisdictions = _MARKET_JURISDICTIONS.get(market, [])
@@ -399,32 +405,40 @@ async def generate_salience_headlines(
                 if market in _DISCOVERY_MARKETS:
                     context = await _ferc_context(entry.docket_key, week_start, week_end)
                 else:
-                    context = await _filings_context(entry.docket_key, jurisdictions, week_start, week_end)
+                    context = await _filings_context(
+                        entry.docket_key, jurisdictions, week_start, week_end
+                    )
 
                 headline = await _generate_headline(market, entry, context)
 
                 await session.execute(
                     text(_HEADLINE_UPDATE_SQL),
                     {
-                        "market":     market,
+                        "market": market,
                         "week_start": week_start,
-                        "rank":       entry.rank,
-                        "headline":   headline,
+                        "rank": entry.rank,
+                        "headline": headline,
                     },
                 )
                 logger.info(
                     "salience headline: market=%s rank=%d docket=%s | %r",
-                    market, entry.rank, entry.docket_key, headline,
+                    market,
+                    entry.rank,
+                    entry.docket_key,
+                    headline,
                 )
             except Exception:
                 logger.exception(
                     "salience headline failed for market=%s rank=%d docket=%s — skipping",
-                    market, entry.rank, entry.docket_key,
+                    market,
+                    entry.rank,
+                    entry.docket_key,
                 )
         await session.commit()
 
 
 # ── STEP 1: ranking ───────────────────────────────────────────────────────────
+
 
 async def compute_market_salience(
     market: str,
@@ -445,10 +459,10 @@ async def compute_market_salience(
             rows = await session.execute(
                 text(_FERC_SQL),
                 {
-                    "week_start":     week_start,
-                    "week_end":       week_end,
+                    "week_start": week_start,
+                    "week_end": week_end,
                     "min_doc_weight": min_doc_weight,
-                    "top_n":          top_n,
+                    "top_n": top_n,
                 },
             )
         else:
@@ -458,11 +472,11 @@ async def compute_market_salience(
             rows = await session.execute(
                 text(_FILINGS_SQL),
                 {
-                    "week_start":     week_start,
-                    "week_end":       week_end,
-                    "jurisdictions":  jurisdictions,
+                    "week_start": week_start,
+                    "week_end": week_end,
+                    "jurisdictions": jurisdictions,
                     "min_doc_weight": min_doc_weight,
-                    "top_n":          top_n,
+                    "top_n": top_n,
                 },
             )
 
@@ -471,7 +485,9 @@ async def compute_market_salience(
     if not results:
         logger.info(
             "salience: no eligible data for market=%s week_start=%s (min_doc_weight=%d)",
-            market, week_start, min_doc_weight,
+            market,
+            week_start,
+            min_doc_weight,
         )
         return []
 
@@ -491,22 +507,24 @@ async def compute_market_salience(
             await session.execute(
                 text(_UPSERT_SQL),
                 {
-                    "market":          market,
-                    "week_start":      week_start,
-                    "rank":            rank_idx,
-                    "docket_key":      entry.docket_key,
-                    "docket_title":    entry.docket_title,
-                    "score":           entry.score,
-                    "filings_count":   entry.filings_count,
+                    "market": market,
+                    "week_start": week_start,
+                    "rank": rank_idx,
+                    "docket_key": entry.docket_key,
+                    "docket_title": entry.docket_title,
+                    "score": entry.score,
+                    "filings_count": entry.filings_count,
                     "distinct_filers": entry.distinct_filers,
-                    "max_doc_weight":  entry.max_doc_weight,
+                    "max_doc_weight": entry.max_doc_weight,
                 },
             )
         await session.commit()
 
     logger.info(
         "salience: market=%s week_start=%s — top %d: %s",
-        market, week_start, len(entries),
+        market,
+        week_start,
+        len(entries),
         [(e.rank, e.docket_key, e.score) for e in entries],
     )
     return entries
@@ -546,6 +564,7 @@ async def get_market_salience(
 
 
 # ── Job handler ───────────────────────────────────────────────────────────────
+
 
 async def handle_compute_salience(payload: dict[str, Any]) -> None:
     """Worker handler for 'compute-market-salience' jobs.

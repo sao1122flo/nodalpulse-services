@@ -19,10 +19,7 @@ from nodalpulse.db.engine import AsyncSessionLocal
 async def is_crawl_done_for(d: date) -> bool:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            text(
-                "SELECT crawl_enqueued_at FROM scheduler_daily_runs "
-                "WHERE run_date = :d"
-            ),
+            text("SELECT crawl_enqueued_at FROM scheduler_daily_runs WHERE run_date = :d"),
             {"d": d},
         )
         row = result.first()
@@ -45,10 +42,7 @@ async def mark_crawl_done_for(d: date) -> None:
 async def is_brief_done_for(d: date) -> bool:
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            text(
-                "SELECT brief_enqueued_at FROM scheduler_daily_runs "
-                "WHERE run_date = :d"
-            ),
+            text("SELECT brief_enqueued_at FROM scheduler_daily_runs WHERE run_date = :d"),
             {"d": d},
         )
         row = result.first()

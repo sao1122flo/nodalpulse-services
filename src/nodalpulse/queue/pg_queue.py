@@ -113,7 +113,11 @@ async def dequeue(kind: str, lock_seconds: int = 900) -> dict[str, Any] | None:
                 RETURNING id::text, kind, payload, attempts, max_attempts
                 """
             ),
-            {"worker_id": WORKER_ID, "lock_interval": timedelta(seconds=lock_seconds), "kind": kind},
+            {
+                "worker_id": WORKER_ID,
+                "lock_interval": timedelta(seconds=lock_seconds),
+                "kind": kind,
+            },
         )
         row = result.mappings().first()
         await session.commit()
@@ -174,7 +178,8 @@ async def run_worker(kind: str, handler: Any, poll_interval: float = 5.0) -> Non
         if spent >= _SPEND_CIRCUIT_USD:
             logger.critical(
                 "Spend circuit breaker: $%.4f last-hour >= $%.2f threshold — sleeping 1h",
-                spent, _SPEND_CIRCUIT_USD,
+                spent,
+                _SPEND_CIRCUIT_USD,
             )
             await asyncio.sleep(3600)
             continue

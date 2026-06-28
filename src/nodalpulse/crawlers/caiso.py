@@ -18,7 +18,7 @@ R2 strategy: content=b"" — source_url stored at crawl time; PDF uploaded to R2
 
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import httpx
 from selectolax.parser import HTMLParser, Node
@@ -29,33 +29,33 @@ from nodalpulse.crawlers.base import MarketAdapter, RawFiling
 logger = logging.getLogger(__name__)
 
 _INDEX_URL = "https://www.caiso.com/legal-regulatory/regulatory-filings-orders/filings"
-_BASE_URL  = "https://www.caiso.com"
+_BASE_URL = "https://www.caiso.com"
 
 # FERC docket regex — same pattern as FercAdapter (T2).
-_DOCKET_RE     = re.compile(r"\b([A-Z]{1,4}\d{2}-\d+(?:-\d{3})?)\b")
+_DOCKET_RE = re.compile(r"\b([A-Z]{1,4}\d{2}-\d+(?:-\d{3})?)\b")
 _SUB_DOCKET_RE = re.compile(r"-\d{3}$")
 
 # Ordered longest-first so "compliance filing" matches before "filing".
 _TITLE_TYPE_PATTERNS: list[tuple[str, str]] = [
-    ("tariff amendment",     "tariff_amendment"),
-    ("compliance filing",    "compliance_filing"),
+    ("tariff amendment", "tariff_amendment"),
+    ("compliance filing", "compliance_filing"),
     ("informational filing", "informational_filing"),
-    ("joint motion",         "motion"),
-    ("motion for",           "motion"),
-    ("motion to",            "motion"),
-    ("petition for",         "petition"),
-    ("petition to",          "petition"),
-    ("notice of",            "notice"),
-    ("answer to",            "answer"),
-    ("answer of",            "answer"),
-    ("comment on",           "comment"),
-    ("comments on",          "comment"),
-    ("errata",               "errata"),
-    ("order",                "order"),
-    ("report",               "report"),
-    ("motion",               "motion"),
-    ("answer",               "answer"),
-    ("comment",              "comment"),
+    ("joint motion", "motion"),
+    ("motion for", "motion"),
+    ("motion to", "motion"),
+    ("petition for", "petition"),
+    ("petition to", "petition"),
+    ("notice of", "notice"),
+    ("answer to", "answer"),
+    ("answer of", "answer"),
+    ("comment on", "comment"),
+    ("comments on", "comment"),
+    ("errata", "errata"),
+    ("order", "order"),
+    ("report", "report"),
+    ("motion", "motion"),
+    ("answer", "answer"),
+    ("comment", "comment"),
 ]
 
 
@@ -93,6 +93,7 @@ class CaisoAdapter(MarketAdapter):
     Uses selectolax for HTML parsing (already in dependencies). All PDFs have
     content=b"" — source_url is preserved; R2 upload deferred to extraction time.
     """
+
     source_slug = "caiso"
 
     async def fetch_new(self, since: str | None = None) -> list[RawFiling]:
@@ -121,7 +122,7 @@ class CaisoAdapter(MarketAdapter):
         # data-track-id="ferc" — that substring matches 'id="ferc"' but is not the section heading.
         ferc_start = html.find('id="ferc">')
         if ferc_start == -1:
-            logger.warning("CaisoAdapter: id=\"ferc\"> anchor not found — page structure changed?")
+            logger.warning('CaisoAdapter: id="ferc"> anchor not found — page structure changed?')
             return []
         cpuc_start = html.find('id="cpuc">', ferc_start)
         ferc_html = html[ferc_start:cpuc_start] if cpuc_start != -1 else html[ferc_start:]
@@ -158,7 +159,10 @@ class CaisoAdapter(MarketAdapter):
             )
         logger.info(
             "CaisoAdapter: since=%s kept=%d dropped_no_docket=%d skipped_old=%d",
-            since_date, len(filings), len(dropped_no_docket), skipped_date,
+            since_date,
+            len(filings),
+            len(dropped_no_docket),
+            skipped_date,
         )
         return filings
 
@@ -167,8 +171,8 @@ class CaisoAdapter(MarketAdapter):
         Returns RawFiling on success, None if row is too old, False if no dockets found.
         """
         title_td = tr.css_first("td.doc-table-title")
-        type_td  = tr.css_first("td[data-mobile-title=Type]")
-        date_td  = tr.css_first("td.doc-lib-date")
+        type_td = tr.css_first("td[data-mobile-title=Type]")
+        date_td = tr.css_first("td.doc-lib-date")
 
         if not (title_td and type_td and date_td):
             return None
@@ -182,14 +186,14 @@ class CaisoAdapter(MarketAdapter):
         if not data_sort:
             return None
 
-        filed_dt = datetime.fromtimestamp(data_sort, tz=timezone.utc)
+        filed_dt = datetime.fromtimestamp(data_sort, tz=UTC)
         if filed_dt.date() < since_date:
             return None  # too old
 
-        href        = link.attributes.get("href", "")
+        href = link.attributes.get("href", "")
         external_id = link.attributes.get("data-track-file-name", "")
-        title_text  = link.text(strip=True)
-        raw_type    = type_td.text(strip=True)
+        title_text = link.text(strip=True)
+        raw_type = type_td.text(strip=True)
 
         if not external_id or not title_text:
             return None
@@ -199,7 +203,7 @@ class CaisoAdapter(MarketAdapter):
             return False  # CPUC/CEC/Court rows — no FERC docket IDs
 
         source_url = (_BASE_URL + href) if href.startswith("/") else href
-        doc_type   = _infer_doc_type(title_text, raw_type)
+        doc_type = _infer_doc_type(title_text, raw_type)
 
         return RawFiling(
             source_slug="caiso",
@@ -212,6 +216,6 @@ class CaisoAdapter(MarketAdapter):
             file_ext="pdf",
             metadata={
                 "docket_numbers": docket_numbers,
-                "filing_type":    raw_type,
+                "filing_type": raw_type,
             },
         )

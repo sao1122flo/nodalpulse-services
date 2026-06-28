@@ -106,7 +106,12 @@ async def find_or_create_docket(
                       title        = COALESCE(dockets.title, EXCLUDED.title)
                 RETURNING id::text
             """),
-            {"source_id": source_id, "external_id": docket_number, "jurisdiction": jurisdiction, "title": title},
+            {
+                "source_id": source_id,
+                "external_id": docket_number,
+                "jurisdiction": jurisdiction,
+                "title": title,
+            },
         )
         docket_id = result.scalar_one()
         await session.commit()
@@ -142,6 +147,7 @@ async def get_cpuc_docket_set() -> set[str]:
     A.25-08-008 → A2508008.
     """
     import re
+
     _norm_re = re.compile(r"[.\-\s]")
     _valid_re = re.compile(r"^[A-Z][0-9]{5,}$")
 
@@ -171,7 +177,9 @@ async def get_pjm_ferc_docket_set() -> set[str]:
     async with AsyncSessionLocal() as session:
         try:
             result = await session.execute(
-                text("SELECT external_id FROM dockets WHERE jurisdiction = 'PJM-FERC' AND watched = true"),
+                text(
+                    "SELECT external_id FROM dockets WHERE jurisdiction = 'PJM-FERC' AND watched = true"
+                ),
             )
             rows = result.fetchall()
             if rows:
@@ -192,14 +200,16 @@ async def get_all_tracked_docket_ids() -> set[str]:
     Called once per crawl tick in selective mode to gate Sonnet extraction.
     """
     async with AsyncSessionLocal() as session:
-        result = await session.execute(text("""
+        result = await session.execute(
+            text("""
             SELECT DISTINCT docket_id::text FROM user_dockets
             UNION
             SELECT DISTINCT unnest(tracked_docket_ids)::text
             FROM user_profiles
             WHERE tracked_docket_ids IS NOT NULL
               AND array_length(tracked_docket_ids, 1) > 0
-        """))
+        """)
+        )
         return {row[0] for row in result.fetchall() if row[0]}
 
 

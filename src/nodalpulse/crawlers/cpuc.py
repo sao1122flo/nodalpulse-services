@@ -60,23 +60,23 @@ _HEADERS = {
 _LA_TZ = ZoneInfo("America/Los_Angeles")
 
 # Viewstate / validation patterns — id="..." form (the CPUC form uses both)
-_VS_RE  = re.compile(r'id="__VIEWSTATE"\s+[^>]*value="([^"]*)"')
+_VS_RE = re.compile(r'id="__VIEWSTATE"\s+[^>]*value="([^"]*)"')
 _VSG_RE = re.compile(r'id="__VIEWSTATEGENERATOR"\s+[^>]*value="([^"]*)"')
-_EV_RE  = re.compile(r'id="__EVENTVALIDATION"\s+[^>]*value="([^"]*)"')
+_EV_RE = re.compile(r'id="__EVENTVALIDATION"\s+[^>]*value="([^"]*)"')
 _NUM_RESULTS_RE = re.compile(r'var numResults\s*=\s*"(\d+)"')
 
 # PDF href (single or double-quoted, any /PublishedDocs path)
 _PDF_HREF_RE = re.compile(r"""href=['"]?(/PublishedDocs[^'">\s]+)['"]?""", re.I)
 # Numeric doc ID from PDF filename: .../608275753.pdf → "608275753"
-_PDF_ID_RE   = re.compile(r"/([0-9]+)\.\w{2,5}$", re.I)
+_PDF_ID_RE = re.compile(r"/([0-9]+)\.\w{2,5}$", re.I)
 # Proceeding embedded in title cell
 _PROC_IN_TITLE_RE = re.compile(r"Proceeding:\s*([A-Za-z][0-9]+)", re.I)
 # Strip leading proceeding number prefix from title text
-_PROC_PREFIX_RE   = re.compile(r"^[A-Z][0-9]{5,9}\s+")
+_PROC_PREFIX_RE = re.compile(r"^[A-Z][0-9]{5,9}\s+")
 # Normalize proceeding number: A.25-08-008 → A2508008
-_PROC_NORM_RE     = re.compile(r"[.\-\s]")
+_PROC_NORM_RE = re.compile(r"[.\-\s]")
 # Valid normalized proc: letter then ≥5 digits
-_PROC_VALID_RE    = re.compile(r"^[A-Z][0-9]{5,}$")
+_PROC_VALID_RE = re.compile(r"^[A-Z][0-9]{5,}$")
 
 
 def normalize_proc(raw: str) -> str:
@@ -86,39 +86,39 @@ def normalize_proc(raw: str) -> str:
 
 # Ordered map (most-specific key first)
 _DOC_TYPE_MAP: list[tuple[str, str]] = [
-    ("proposed decision",            "cpuc-proposed-decision"),
-    ("presiding officers decision",  "cpuc-proposed-decision"),
-    ("draft decision",               "cpuc-proposed-decision"),
-    ("final decision",               "cpuc-decision"),
-    ("agenda decision",              "cpuc-decision"),
-    ("comment decision",             "cpuc-decision"),
-    ("final resolution",             "cpuc-resolution"),
-    ("agenda resolution",            "cpuc-resolution"),
-    ("comment resolution",           "cpuc-resolution"),
-    ("alj resolution",               "cpuc-resolution"),
-    ("scoping ruling",               "cpuc-ruling"),
-    ("ruling",                       "cpuc-ruling"),
-    ("compliance filing",            "cpuc-filing"),
-    ("supporting document",          "cpuc-filing"),
-    ("comments",                     "cpuc-comments"),
-    ("motion",                       "cpuc-motion"),
-    ("petition",                     "cpuc-petition"),
-    ("application",                  "cpuc-application"),
-    ("complaint",                    "cpuc-complaint"),
-    ("exparte",                      "cpuc-exparte"),
-    ("notice",                       "cpuc-notice"),
-    ("order",                        "cpuc-order"),
-    ("testimony",                    "cpuc-testimony"),
-    ("exhibit",                      "cpuc-filing"),
-    ("brief",                        "cpuc-brief"),
-    ("protest",                      "cpuc-protest"),
-    ("answer",                       "cpuc-filing"),
-    ("amendment",                    "cpuc-filing"),
-    ("supplement",                   "cpuc-filing"),
-    ("report",                       "cpuc-informational"),
-    ("federal filings",              "cpuc-informational"),
-    ("response",                     "cpuc-filing"),
-    ("reply",                        "cpuc-filing"),
+    ("proposed decision", "cpuc-proposed-decision"),
+    ("presiding officers decision", "cpuc-proposed-decision"),
+    ("draft decision", "cpuc-proposed-decision"),
+    ("final decision", "cpuc-decision"),
+    ("agenda decision", "cpuc-decision"),
+    ("comment decision", "cpuc-decision"),
+    ("final resolution", "cpuc-resolution"),
+    ("agenda resolution", "cpuc-resolution"),
+    ("comment resolution", "cpuc-resolution"),
+    ("alj resolution", "cpuc-resolution"),
+    ("scoping ruling", "cpuc-ruling"),
+    ("ruling", "cpuc-ruling"),
+    ("compliance filing", "cpuc-filing"),
+    ("supporting document", "cpuc-filing"),
+    ("comments", "cpuc-comments"),
+    ("motion", "cpuc-motion"),
+    ("petition", "cpuc-petition"),
+    ("application", "cpuc-application"),
+    ("complaint", "cpuc-complaint"),
+    ("exparte", "cpuc-exparte"),
+    ("notice", "cpuc-notice"),
+    ("order", "cpuc-order"),
+    ("testimony", "cpuc-testimony"),
+    ("exhibit", "cpuc-filing"),
+    ("brief", "cpuc-brief"),
+    ("protest", "cpuc-protest"),
+    ("answer", "cpuc-filing"),
+    ("amendment", "cpuc-filing"),
+    ("supplement", "cpuc-filing"),
+    ("report", "cpuc-informational"),
+    ("federal filings", "cpuc-informational"),
+    ("response", "cpuc-filing"),
+    ("reply", "cpuc-filing"),
 ]
 
 
@@ -147,9 +147,9 @@ async def _init_session(client: httpx.AsyncClient) -> dict | None:
         logger.exception("CpucAdapter: GET form page failed")
         return None
 
-    vs  = _VS_RE.search(r.text)
+    vs = _VS_RE.search(r.text)
     vsg = _VSG_RE.search(r.text)
-    ev  = _EV_RE.search(r.text)
+    ev = _EV_RE.search(r.text)
 
     if not vs or not ev:
         logger.error("CpucAdapter: __VIEWSTATE / __EVENTVALIDATION missing from form page")
@@ -160,9 +160,9 @@ async def _init_session(client: httpx.AsyncClient) -> dict | None:
 
 def _extract_session(html: str) -> dict | None:
     """Pull viewstate from a results-page response (used for pagination)."""
-    vs  = _VS_RE.search(html)
+    vs = _VS_RE.search(html)
     vsg = _VSG_RE.search(html)
-    ev  = _EV_RE.search(html)
+    ev = _EV_RE.search(html)
     if not vs or not ev:
         return None
     return {"vs": vs.group(1), "vsg": vsg.group(1) if vsg else "", "ev": ev.group(1)}
@@ -182,23 +182,23 @@ async def _post_search(
     r = await client.post(
         _FORM_URL,
         data={
-            "__EVENTTARGET":      "",
-            "__EVENTARGUMENT":    "",
-            "__VIEWSTATE":        session["vs"],
+            "__EVENTTARGET": "",
+            "__EVENTARGUMENT": "",
+            "__VIEWSTATE": session["vs"],
             "__VIEWSTATEGENERATOR": session["vsg"],
-            "__EVENTVALIDATION":  session["ev"],
-            "DocTitle":           "",
-            "ddlCpuc01Types":     "-1",
-            "ddlEfileTypes":      "-1",
-            "IndustryID":         "1",  # Energy
-            "ProcNum":            proc,
-            "MeetDate":           "",
-            "PubDateFrom":        since_date.strftime("%m/%d/%Y"),
-            "PubDateTo":          date.today().strftime("%m/%d/%Y"),
-            "EfileConfirmNum":    "",
-            "FilingDateFrom":     "",
-            "FilingDateTo":       "",
-            "SearchButton":       "Search",
+            "__EVENTVALIDATION": session["ev"],
+            "DocTitle": "",
+            "ddlCpuc01Types": "-1",
+            "ddlEfileTypes": "-1",
+            "IndustryID": "1",  # Energy
+            "ProcNum": proc,
+            "MeetDate": "",
+            "PubDateFrom": since_date.strftime("%m/%d/%Y"),
+            "PubDateTo": date.today().strftime("%m/%d/%Y"),
+            "EfileConfirmNum": "",
+            "FilingDateFrom": "",
+            "FilingDateTo": "",
+            "SearchButton": "Search",
         },
         headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": _FORM_URL},
     )
@@ -215,11 +215,11 @@ async def _post_next_page(
     r = await client.post(
         _RESULTS_URL,
         data={
-            "__EVENTTARGET":        "lnkNextPage",
-            "__EVENTARGUMENT":      "",
-            "__VIEWSTATE":          page_session["vs"],
+            "__EVENTTARGET": "lnkNextPage",
+            "__EVENTARGUMENT": "",
+            "__VIEWSTATE": page_session["vs"],
             "__VIEWSTATEGENERATOR": page_session["vsg"],
-            "__EVENTVALIDATION":    page_session["ev"],
+            "__EVENTVALIDATION": page_session["ev"],
         },
         headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": _FORM_URL},
     )
@@ -256,15 +256,15 @@ def _parse_result_page(
         if len(cells) < 4:
             continue
 
-        title_raw    = re.sub(r"<[^>]+>", " ", cells[0]).strip()
-        title_raw    = re.sub(r"\s+", " ", title_raw)
+        title_raw = re.sub(r"<[^>]+>", " ", cells[0]).strip()
+        title_raw = re.sub(r"\s+", " ", title_raw)
         doc_type_raw = re.sub(r"<[^>]+>", "", cells[1]).strip()
         pub_date_str = re.sub(r"<[^>]+>", "", cells[3]).strip()
 
         pdf_href = _PDF_HREF_RE.search(cells[2]) if len(cells) > 2 else None
         if not pdf_href:
             continue
-        pdf_path   = pdf_href.group(1)
+        pdf_path = pdf_href.group(1)
         source_url = _BASE_URL + pdf_path
 
         id_match = _PDF_ID_RE.search(pdf_path)
@@ -285,7 +285,7 @@ def _parse_result_page(
 
         # Proceeding from title (may differ from queried proc for cross-listed docs)
         proc_in_title = _PROC_IN_TITLE_RE.search(title_raw)
-        filing_proc   = proc_in_title.group(1) if proc_in_title else proc
+        filing_proc = proc_in_title.group(1) if proc_in_title else proc
 
         # Clean title: strip "Proceeding: XXXX" suffix
         title = re.sub(r"\s*Proceeding:\s*\S+\s*$", "", title_raw).strip()
@@ -298,26 +298,27 @@ def _parse_result_page(
         if title_no_prefix and title_no_prefix != title:
             filer = title_no_prefix[:120]
 
-        filed_at = datetime(pub_date.year, pub_date.month, pub_date.day,
-                            tzinfo=_LA_TZ).isoformat()
+        filed_at = datetime(pub_date.year, pub_date.month, pub_date.day, tzinfo=_LA_TZ).isoformat()
 
-        filings.append(RawFiling(
-            source_slug="cpuc",
-            external_id=external_id,
-            doc_type=_infer_doc_type(doc_type_raw),
-            title=title[:500],
-            source_url=source_url,
-            filed_at=filed_at,
-            content=b"",    # deferred R2 — fetched at extraction time post-triage
-            file_ext=_ext_from_path(pdf_path),
-            metadata={
-                "proc_num":      filing_proc,
-                "doc_type_raw":  doc_type_raw,
-                "pub_date":      pub_date.isoformat(),
-                "docket_numbers": [filing_proc],
-                "filer":         filer,
-            },
-        ))
+        filings.append(
+            RawFiling(
+                source_slug="cpuc",
+                external_id=external_id,
+                doc_type=_infer_doc_type(doc_type_raw),
+                title=title[:500],
+                source_url=source_url,
+                filed_at=filed_at,
+                content=b"",  # deferred R2 — fetched at extraction time post-triage
+                file_ext=_ext_from_path(pdf_path),
+                metadata={
+                    "proc_num": filing_proc,
+                    "doc_type_raw": doc_type_raw,
+                    "pub_date": pub_date.isoformat(),
+                    "docket_numbers": [filing_proc],
+                    "filer": filer,
+                },
+            )
+        )
 
     # Early-stop: last row pub_date < since_date.
     # numResults in the JS reflects the server-side PubDateFrom-filtered count (confirmed
@@ -374,13 +375,18 @@ async def _fetch_proceeding(
             # Server-side session expiry or 500 — return what we have from earlier pages.
             logger.warning(
                 "CpucAdapter: proc=%s page=%d pagination error (%s) — returning %d filings from prior pages",
-                proc, page, exc, len(all_filings),
+                proc,
+                page,
+                exc,
+                len(all_filings),
             )
             if len(all_filings) < total:
                 logger.warning(
                     "CpucAdapter: proc=%s POSSIBLE DOC LOSS — got %d of server-reported %d; "
                     "CPUC SearchRes.aspx 500 may have dropped pages",
-                    proc, len(all_filings), total,
+                    proc,
+                    len(all_filings),
+                    total,
                 )
             break
         filings, should_stop = _parse_result_page(r.text, proc, since_date)
@@ -390,7 +396,10 @@ async def _fetch_proceeding(
     if page >= _MAX_PAGES_PER_PROC:
         logger.warning(
             "CpucAdapter: proc=%s hit page cap (%d) — got %d of server-reported %d",
-            proc, _MAX_PAGES_PER_PROC, len(all_filings), total,
+            proc,
+            _MAX_PAGES_PER_PROC,
+            len(all_filings),
+            total,
         )
 
     return all_filings
@@ -456,6 +465,7 @@ class CpucAdapter(MarketAdapter):
 
         logger.info(
             "CpucAdapter: %d new filings across %d proceedings",
-            len(filings), len(self._watched),
+            len(filings),
+            len(self._watched),
         )
         return filings

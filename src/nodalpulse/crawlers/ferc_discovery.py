@@ -24,8 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -106,7 +106,9 @@ async def fetch_ferc_discovery(
     """
     logger.info(
         "fetch_ferc_discovery: broad sweep since=%s max=%d max_pages=%d",
-        since_date, max_filings, max_pages,
+        since_date,
+        max_filings,
+        max_pages,
     )
 
     items: list[DiscoveryItem] = []
@@ -117,9 +119,9 @@ async def fetch_ferc_discovery(
         while page <= max_pages and len(items) < max_filings:
             body = {
                 "searchText": "*",
-                "searchFullText": False,    # metadata only — no full document text
-                "searchDescription": False, # no text filter; return all Electric filings
-                "docketSearches": [],       # no docket constraint — broad sweep
+                "searchFullText": False,  # metadata only — no full document text
+                "searchDescription": False,  # no text filter; return all Electric filings
+                "docketSearches": [],  # no docket constraint — broad sweep
                 "dateSearches": [],
                 "affiliations": [],
                 "categories": [],
@@ -130,7 +132,7 @@ async def fetch_ferc_discovery(
                 "resultsPerPage": _RESULTS_PER_PAGE,
                 "curPage": page,
                 "groupBy": "NONE",
-                "sortBy": "",   # default = filedDate DESC
+                "sortBy": "",  # default = filedDate DESC
                 "allDates": True,
             }
 
@@ -144,7 +146,10 @@ async def fetch_ferc_discovery(
             total = data.get("totalHits") or 0
             logger.info(
                 "fetch_ferc_discovery: page=%d got=%d total=%d items_so_far=%d",
-                page, len(batch), total, len(items),
+                page,
+                len(batch),
+                total,
+                len(items),
             )
 
             if not batch:
@@ -165,7 +170,9 @@ async def fetch_ferc_discovery(
             if last_filed and last_filed < since_date:
                 logger.info(
                     "fetch_ferc_discovery: early-stop at page=%d (tail=%s < since=%s)",
-                    page, last_filed, since_date,
+                    page,
+                    last_filed,
+                    since_date,
                 )
                 break
 
@@ -220,8 +227,7 @@ def _item_to_discovery(raw: dict, since_date: date) -> DiscoveryItem | None:
     filer_names = [
         aff["affiliation"]
         for aff in raw.get("affiliations", [])
-        if aff.get("afType", "").upper() == "AUTHOR"
-        and aff.get("affiliation")
+        if aff.get("afType", "").upper() == "AUTHOR" and aff.get("affiliation")
     ]
 
     return DiscoveryItem(

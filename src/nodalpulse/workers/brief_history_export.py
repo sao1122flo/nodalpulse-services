@@ -98,7 +98,10 @@ async def handle_brief_history_export(payload: dict) -> dict:
 
     presigned_url = r2.get_client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": __import__("nodalpulse.settings", fromlist=["settings"]).settings.r2_bucket, "Key": zip_key},
+        Params={
+            "Bucket": __import__("nodalpulse.settings", fromlist=["settings"]).settings.r2_bucket,
+            "Key": zip_key,
+        },
         ExpiresIn=_PRESIGNED_EXPIRY_SECONDS,
     )
 
@@ -106,7 +109,9 @@ async def handle_brief_history_export(payload: dict) -> dict:
 
     logger.info(
         "brief_history_export done user=%s briefs=%d zip_bytes=%d",
-        user_id, len(briefs), len(zip_bytes),
+        user_id,
+        len(briefs),
+        len(zip_bytes),
     )
     return {"user_id": user_id, "brief_count": len(briefs), "status": "ok", "zip_key": zip_key}
 

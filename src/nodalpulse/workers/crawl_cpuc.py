@@ -33,7 +33,9 @@ async def handle_crawl_cpuc(payload: dict) -> dict:
         logger.info("handle_crawl_cpuc: %d proceedings in watch set", len(proc_set))
 
     result = await run_adapter(
-        CpucAdapter(proc_set), "cpuc", payload.get("since"),
+        CpucAdapter(proc_set),
+        "cpuc",
+        payload.get("since"),
         max_filings=payload.get("max_filings"),
     )
     result["watched"] = len(proc_set)
