@@ -21,9 +21,9 @@ from nodalpulse.storage import r2
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VER = "1.0"
+SCHEMA_VER = "1.1"
 TRIAGE_PROMPT_VER = "1.3"  # Haiku triage prompt (relevance classification only)
-PROMPT_VER = "1.5"         # Sonnet extraction prompt (interventions; PUCT/ERCOT deadline type+source)
+PROMPT_VER = "1.6"         # Sonnet extraction: + deadline.actor, intervention.party_role, docket_linkages
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -73,6 +73,24 @@ Use only values from: "Regulatory Analyst", "Compliance Officer", "Energy Lawyer
 Empty array means relevant to all roles.\
 """
 
+# Shared guidance for the prompt_ver 1.6 enrichment fields. Appended to every
+# market prompt so the rules stay identical across PJM/CAISO/PUCT/ERCOT.
+_ENRICH_GUIDANCE = """\
+
+
+--- Enrichment fields (prompt_ver 1.6) ---
+deadline.actor: who must act by each deadline — e.g. "Applicant", "Intervenors", "Staff",
+"ALJ", "All parties". Use null when the responsible party isn't clear from the document.
+
+intervention.party_role: each intervening party's role in THIS proceeding — one of
+"applicant", "intervenor", "protestant", "staff", "commenter", or null if unclear.
+
+docket_linkages: other docket / proceeding numbers EXPLICITLY referenced in this document,
+each with a short reason for the link (e.g. "compliance with order", "consolidated proceeding",
+"same tariff", "cross-reference to related case"). Only include dockets actually cited in the
+text — never infer or guess. Return an empty array [] if none are cited.\
+"""
+
 _EXTRACT_SYSTEM_PJM = """\
 You are an expert analyst of PJM Interconnection regulatory filings at FERC (Federal Energy
 Regulatory Commission), including filings by PJM itself, the PJM Independent Market Monitor
@@ -88,7 +106,7 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what the filer is requesting from FERC, or null>",
   "outcome": "<if this is a FERC order: the disposition, or null>",
   "effective_date": "<ISO date if mentioned as proposed or ordered effective date, or null>",
-  "deadlines": [{"type": "stakeholder_comment|compliance|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null}],
+  "deadlines": [{"type": "stakeholder_comment|compliance|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null, "actor": "<who must act, or null>"}],
   "dollar_impacts": [{"type": "<price_cap|price_floor|clearing_price|cost_allocation|penalty|other>", "unit": "<$/MW-day|$/MWh|$|other>", "value": <number or null>, "description": "<context>"}],
   "rpm_parameters": {
     "price_cap_ucap_mwday": <number or null>,
@@ -109,7 +127,8 @@ Extract structured information from the document. Respond with JSON only, no mar
     "other_suppliers": {"support": <int>, "oppose": <int>, "abstain": <int>},
     "end_use_customers": {"support": <int>, "oppose": <int>, "abstain": <int>}
   },
-  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest"}],
+  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest", "party_role": "<applicant|intervenor|protestant|staff|commenter, or null>"}],
+  "docket_linkages": [{"docket": "<other docket/proceeding number explicitly referenced>", "reason": "<short phrase: why related>"}],
   "role_tags": []
 }
 
@@ -216,10 +235,11 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what CAISO or the filer is requesting from FERC, or null>",
   "outcome": "<if this is a FERC order: the disposition, or null>",
   "effective_date": "<ISO date if mentioned as a proposed or ordered effective date, or null>",
-  "deadlines": [{"type": "stakeholder_comment|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null}],
+  "deadlines": [{"type": "stakeholder_comment|hearing|other", "description": "...", "date": "<ISO date or null>", "source": "filing", "estimated": false, "verify_url": null, "actor": "<who must act, or null>"}],
   "initiative_name": "<CAISO internal initiative or tariff topic name, e.g. 'Storage as a Transmission-Only Asset (SPTO)', 'Resource Adequacy (RA)', or null if not identifiable>",
   "cpuc_proceeding_refs": ["<CPUC proceeding number e.g. A.22-11-017 or R.21-06-017, if the document cross-references a CPUC proceeding>"],
-  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest"}],
+  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest", "party_role": "<applicant|intervenor|protestant|staff|commenter, or null>"}],
+  "docket_linkages": [{"docket": "<other docket/proceeding number explicitly referenced>", "reason": "<short phrase: why related>"}],
   "role_tags": []
 }
 
@@ -260,8 +280,9 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what the filer is asking for, or null>",
   "outcome": "<if this is an order: the ruling, or null>",
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"type": "hearing|compliance|comment_deadline|order_effective|other", "description": "...", "date": "<ISO date or null>", "source": "filing|order"}],
-  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest"}],
+  "deadlines": [{"type": "hearing|compliance|comment_deadline|order_effective|other", "description": "...", "date": "<ISO date or null>", "source": "filing|order", "actor": "<who must act, or null>"}],
+  "interventions": [{"party": "<party name>", "stance": "support|oppose|comments|protest", "party_role": "<applicant|intervenor|protestant|staff|commenter, or null>"}],
+  "docket_linkages": [{"docket": "<other docket/proceeding number explicitly referenced>", "reason": "<short phrase: why related>"}],
   "role_tags": []
 }
 
@@ -290,7 +311,8 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": "<what protocol change is being proposed, or null>",
   "outcome": "<if this is a final disposition: the ruling or withdrawal status, or null>",
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"type": "balloting|hearing|comment_deadline|implementation|other", "description": "...", "date": "<ISO date or null>", "source": "filing|notice"}],
+  "deadlines": [{"type": "balloting|hearing|comment_deadline|implementation|other", "description": "...", "date": "<ISO date or null>", "source": "filing|notice", "actor": "<who must act, or null>"}],
+  "docket_linkages": [{"docket": "<other proceeding/revision number explicitly referenced>", "reason": "<short phrase: why related>"}],
   "role_tags": []
 }
 
@@ -314,7 +336,8 @@ Extract structured information from the document. Respond with JSON only, no mar
   "relief_requested": null,
   "outcome": null,
   "effective_date": "<ISO date if mentioned, or null>",
-  "deadlines": [{"type": "implementation|outage|comment_deadline|other", "description": "...", "date": "<ISO date or null>", "source": "notice"}],
+  "deadlines": [{"type": "implementation|outage|comment_deadline|other", "description": "...", "date": "<ISO date or null>", "source": "notice", "actor": "<who must act, or null>"}],
+  "docket_linkages": [{"docket": "<other proceeding number explicitly referenced>", "reason": "<short phrase: why related>"}],
   "role_tags": []
 }
 
@@ -328,18 +351,18 @@ Leave as empty array [] if none are explicitly stated.
 def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
     # PJM/IMM: standalone prompt with embedded PJM reference — no Texas taxonomy.
     if source_slug in {"pjm", "imm"}:
-        return _EXTRACT_SYSTEM_PJM
+        return _EXTRACT_SYSTEM_PJM + _ENRICH_GUIDANCE
     # FERC-generic (source_slug="ferc"): FERC-aware schema (CAISO prompt), no Texas taxonomy.
     # FERC filings are FERC-jurisdictional, not Texas — PUCT framing (the else branch) was wrong.
     # CAISO-specific fields (initiative_name, cpuc_proceeding_refs) will be null for non-CAISO
     # FERC filings, which is acceptable. Mirrors the PJM early-return pattern.
     if source_slug == "ferc":
-        return _EXTRACT_SYSTEM_CAISO
+        return _EXTRACT_SYSTEM_CAISO + _ENRICH_GUIDANCE
     # CPUC: California state regulator — use CAISO prompt as v1 lens (#79).
     # CPUC-specific fields (initiative_name/cpuc_proceeding_refs) will be null for CPUC docs;
     # acceptable. Flag for a dedicated CPUC lens if extraction quality degrades.
     if source_slug == "cpuc":
-        return _EXTRACT_SYSTEM_CAISO
+        return _EXTRACT_SYSTEM_CAISO + _ENRICH_GUIDANCE
     if source_slug == "caiso":
         base = _EXTRACT_SYSTEM_CAISO
     elif doc_type == "ercot-mn":
@@ -348,13 +371,25 @@ def _extract_system_for_doc_type(doc_type: str, source_slug: str = "") -> str:
         base = _EXTRACT_SYSTEM_ERCOT_NPRR
     else:
         base = _EXTRACT_SYSTEM_PUCT
-    return base + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY
+    return base + "\n\n" + TEXAS_ELECTRICITY_TAXONOMY + _ENRICH_GUIDANCE
 
 
-_FERC_ELIBRARY_SEARCH = "https://elibrary.ferc.gov/eLibrary/search?q={docket}"
+# Per-filing FERC eLibrary deep link. FERC filing external_ids ARE the accession
+# number (YYYYMMDD-NNNN). The /search?q=<docket> form does NOT deep-link in the
+# new eLibrary SPA — it lands on an empty search page — and /docketsheet?docketNumber=
+# was tested and also fails, so we link by accession (the confirmed-working form).
+_FERC_ELIBRARY_FILELIST = "https://elibrary.ferc.gov/eLibrary/filelist?accession_number={accession}"
+_FERC_ACCESSION_RE = re.compile(r"^\d{8}-\d{3,5}$")
 
 # Sources that file exclusively with FERC — protest/comment window applies.
 _FERC_FAMILY_SOURCES = {"caiso", "pjm", "ferc", "imm"}
+
+
+def _ferc_filelist_url(accession: str | None) -> str | None:
+    """eLibrary file-list link for a FERC accession (= the filing's external_id)."""
+    if accession and _FERC_ACCESSION_RE.match(accession):
+        return _FERC_ELIBRARY_FILELIST.format(accession=accession)
+    return None
 
 
 def _enrich_deadlines(
@@ -362,6 +397,7 @@ def _enrich_deadlines(
     doc_type: str,
     filed_at: str,
     source_slug: str,
+    accession: str | None = None,
 ) -> dict:
     """Post-process extraction payload to add computed deadlines (scope B).
 
@@ -394,6 +430,7 @@ def _enrich_deadlines(
             "source":      dl.get("source", "filing"),
             "estimated":   True,   # always — LLM date attribution is not certifiable
             "verify_url":  dl.get("verify_url"),
+            "actor":       dl.get("actor"),   # who must act (prompt_ver 1.6+); null if absent
         })
 
     existing_types = {d["type"] for d in deadlines}
@@ -408,6 +445,7 @@ def _enrich_deadlines(
             "source":      "filing",
             "estimated":   False,
             "verify_url":  None,
+            "actor":       None,
         })
 
     # Rehearing — 30 days from FERC order date (FPA §313).
@@ -425,6 +463,7 @@ def _enrich_deadlines(
                 "source":      "order",
                 "estimated":   False,
                 "verify_url":  None,
+                "actor":       "Any party seeking rehearing",
             })
         except ValueError:
             logger.warning("_enrich_deadlines: unparseable filed_at %r for rehearing", filed_at)
@@ -433,8 +472,8 @@ def _enrich_deadlines(
     # expedited proceedings have shorter windows than any default, so a guessed
     # estimate fails exactly in the urgent cases (scope B hard rule).
     if source_slug in _FERC_FAMILY_SOURCES and "protest_notice" not in existing_types:
-        docket = extracted.get("docket_number") or ""
-        verify_url = _FERC_ELIBRARY_SEARCH.format(docket=docket) if docket else None
+        # Link to THIS filing's accession (the order/notice that opens the window).
+        verify_url = _ferc_filelist_url(accession)
         deadlines.append({
             "type":        "protest_notice",
             "description": "Protest/comment deadline — window varies by proceeding type; see FERC Notice",
@@ -442,6 +481,7 @@ def _enrich_deadlines(
             "source":      "order",
             "estimated":   False,
             "verify_url":  verify_url,
+            "actor":       "Intervenors / protestants",
         })
 
     extracted["deadlines"] = deadlines
@@ -575,7 +615,7 @@ async def handle_extract(payload: dict) -> dict:
         await _write_cpuc_cross_refs(filing_id, source_id, extracted)
 
     # Deadline engine — compute/inject structured deadline entries (scope B).
-    extracted = _enrich_deadlines(extracted, doc_type, filing.get("filed_at") or "", source_slug)
+    extracted = _enrich_deadlines(extracted, doc_type, filing.get("filed_at") or "", source_slug, filing.get("external_id"))
 
     extraction_id = await insert_extraction(
         filing_id=filing_id,
