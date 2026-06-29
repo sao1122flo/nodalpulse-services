@@ -33,15 +33,19 @@ from nodalpulse.db.market_events import upsert_market_event
 
 logger = logging.getLogger(__name__)
 
-# PJM stakeholder calendar RSS — confirmed live 2026-06-03.
-# Primary: committees-and-groups.aspx?meetings=All&rss=1
-# Returns application/rss+xml with ~27 upcoming committee/meeting items.
-# pubDate = record-published timestamp (NOT the meeting date).
-# Meeting date is in <description> as "Start Date: MM.DD.YYYY".
-# Feed has UTF-8 BOM — must decode with 'utf-8-sig'.
-#
-# Secondary: InsideLines (PJM news blog — market-level announcements, auction results).
+# PJM stakeholder calendar RSS.
+# Primary: training.aspx?calendars=All&rss=1 — PJM's "All Calendars" feed
+#   (~200 upcoming committee/meeting/workshop/webinar items). Re-pointed
+#   2026-06-29: the old committees-and-groups.aspx?meetings=All&rss=1 feed now
+#   returns an EMPTY channel (0 <item>s) — it was silently producing nothing
+#   (rss_inserted:0 daily). The All-Calendars feed uses the identical item shape:
+#   pubDate = record-published timestamp (NOT the meeting date); the meeting date
+#   is in <description> as "Start Date: MM.DD.YYYY". Feed has a UTF-8 BOM →
+#   decode with 'utf-8-sig'.
+# Secondary: legacy committees feed (kept as a fallback in case PJM re-populates it).
+# Tertiary: InsideLines (PJM news blog — market-level announcements, auction results).
 _PJM_RSS_CANDIDATES = [
+    "https://www.pjm.com/training.aspx?calendars=All&rss=1",
     "https://www.pjm.com/committees-and-groups.aspx?meetings=All&rss=1",
     "https://insidelines.pjm.com/feed/",
 ]
