@@ -1,13 +1,16 @@
 """IMM (Independent Market Monitor / Monitoring Analytics) adapter.
 
-Crawls https://www.monitoringanalytics.com/filings/{year}/ — a static HTML
-directory listing of PDFs with predictable, information-dense filenames.
+Crawls two Monitoring Analytics indexes (both curated SSI .shtml pages —
+directory browsing at /filings/{year}/ is OFF, so that path returns an empty
+body; re-pointed 2026-06-29):
+  - /filings/{year}.shtml — FERC filings (docket + YYYYMMDD in the filename)
+  - /reports/PJM_State_of_the_Market/{year}.shtml — annual/quarterly State of the
+    Market reports (no date in filename → derived from the year/quarter token)
 
 Filename patterns (as of 2026-06):
-  IMM_Complaint_Docket_No_EL24-12_20231107.pdf
-  IMM_Answer_Docket_No_EL25-49_20250301.pdf
-  IMM_Complaint_re_Data_Center_Loads_Docket_No_EL26-119_20251125.pdf
-  IMM_State_of_the_Market_Report_for_PJM_2025_Q1.pdf  (no docket → skipped)
+  filings:  IMM_Answer_Docket_No_EC26-76_20260619.pdf
+            IMM_Complaint_re_Data_Center_Loads_Docket_No_EL26-119_20251125.pdf
+  reports:  2026q1-som-pjm.pdf  ·  2025-som-pjm-vol1.pdf  (section/toc/preface skipped)
 
 Docket linkage: FERC docket IDs parsed from the filename are written to the
 dockets table as PJM-FERC via run_adapter → find_or_create_docket. These dockets
@@ -31,6 +34,7 @@ import logging
 import os
 import re
 from datetime import UTC, date, datetime
+from urllib.parse import urljoin
 
 import httpx
 from selectolax.parser import HTMLParser
@@ -40,10 +44,25 @@ from nodalpulse.crawlers.base import MarketAdapter, RawFiling
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://www.monitoringanalytics.com/filings"
+_ROOT = "https://www.monitoringanalytics.com"
+# The filings INDEX is a curated SSI page at /filings/{year}.shtml — NOT the
+# /filings/{year}/ directory (directory browsing is off → that path returns an
+# empty body, which silently produced {saved:0} daily). The PDFs themselves
+# live at /filings/{year}/<file>.pdf and carry docket + YYYYMMDD in the name.
+_BASE_URL = f"{_ROOT}/filings"
+# State of the Market reports live under a SEPARATE path (not /filings/). Their
+# filenames carry no date — the period is derived from the year/quarter token.
+_SOM_BASE = f"{_ROOT}/reports/PJM_State_of_the_Market"
 
 # ISO date encoded at end of filename: ..._20231107.pdf
 _DATE_RE = re.compile(r"_(\d{8})(?:\.pdf)?$", re.IGNORECASE)
+
+# SOM report filenames: 2026q1-som-pjm.pdf (quarterly full) or 2025-som-pjm-vol1.pdf
+# (annual volume). Section/aux files (-sec, -toc, -preface, …) are skipped — we
+# ingest the consolidated report(s) per period, not all ~15 section PDFs.
+_SOM_MAIN_RE = re.compile(r"(\d{4})(?:q([1-4]))?-som-pjm(?:-vol(\d+))?\.pdf$", re.IGNORECASE)
+_SOM_SKIP_RE = re.compile(r"-(sec\d*|toc|preface|appendix|intro|errata)\.pdf$", re.IGNORECASE)
+_QUARTER_END = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
 
 # FERC docket ID in filename: Docket_No_EL24-12 or Docket_No_ER25-1357.
 # Requires a digit-only sequence after the dash (\d+) — this intentionally
@@ -121,6 +140,34 @@ def _parse_filename(filename: str) -> tuple[str, list[str], date | None]:
     return doc_type, dockets, filed_date
 
 
+def _parse_som_filename(filename: str) -> tuple[date | None, str]:
+    """State-of-the-Market report filename → (period_end_date, human label).
+
+    Returns (None, "") for section/aux PDFs and anything that isn't a main report.
+    The period-end date is derived from the year/quarter token (annual → Dec 31).
+    """
+    if _SOM_SKIP_RE.search(filename):
+        return None, ""
+    m = _SOM_MAIN_RE.search(filename)
+    if not m:
+        return None, ""
+    year = int(m.group(1))
+    quarter = m.group(2)
+    vol = m.group(3)
+    if quarter:
+        mo, day = _QUARTER_END[int(quarter)]
+        label = f"{year} Q{quarter} State of the Market Report for PJM"
+    else:
+        mo, day = 12, 31
+        label = f"{year} Annual State of the Market Report for PJM"
+        if vol:
+            label += f" (Vol {vol})"
+    try:
+        return date(year, mo, day), label
+    except ValueError:
+        return None, label
+
+
 def _make_title(filename: str, dockets: list[str], filed_date: date | None) -> str:
     """Construct a human-readable title from the filename parts."""
     stem = filename[:-4] if filename.lower().endswith(".pdf") else filename
@@ -153,8 +200,8 @@ class ImmAdapter(MarketAdapter):
             headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
         ) as client:
             for year in years:
-                year_filings = await self._fetch_year(client, year, effective_since)
-                filings.extend(year_filings)
+                filings.extend(await self._fetch_year(client, year, effective_since))
+                filings.extend(await self._fetch_som_year(client, year, effective_since))
 
         logger.info(
             "ImmAdapter: since=%s returning %d filings across %d year(s)",
@@ -168,7 +215,7 @@ class ImmAdapter(MarketAdapter):
     async def _fetch_year(
         self, client: httpx.AsyncClient, year: int, since_date: date
     ) -> list[RawFiling]:
-        url = f"{_BASE_URL}/{year}/"
+        url = f"{_BASE_URL}/{year}.shtml"
         logger.debug("ImmAdapter: fetching %s", url)
         try:
             resp = await client.get(url)
@@ -181,9 +228,16 @@ class ImmAdapter(MarketAdapter):
                 return []
             raise
 
-        return self._parse_page(resp.text, year, since_date)
+        if not resp.text.strip():
+            logger.warning(
+                "ImmAdapter: %s returned an empty body — the IMM filings index structure "
+                "may have changed (silent-zero failure mode)",
+                url,
+            )
+            return []
+        return self._parse_page(resp.text, year, since_date, url)
 
-    def _parse_page(self, html: str, year: int, since_date: date) -> list[RawFiling]:
+    def _parse_page(self, html: str, year: int, since_date: date, page_url: str) -> list[RawFiling]:
         tree = HTMLParser(html)
         filings: list[RawFiling] = []
 
@@ -203,7 +257,7 @@ class ImmAdapter(MarketAdapter):
             if filed_date is None or filed_date < since_date:
                 continue
 
-            source_url = href if href.startswith("http") else f"{_BASE_URL}/{year}/{filename}"
+            source_url = urljoin(page_url, href)
             title = _make_title(filename, dockets, filed_date)
             external_id = filename[:-4] if filename.lower().endswith(".pdf") else filename
 
@@ -229,5 +283,82 @@ class ImmAdapter(MarketAdapter):
 
         logger.info(
             "ImmAdapter: year=%d parsed %d filings (since=%s)", year, len(filings), since_date
+        )
+        return filings
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+    async def _fetch_som_year(
+        self, client: httpx.AsyncClient, year: int, since_date: date
+    ) -> list[RawFiling]:
+        """Fetch the State of the Market index for a year and ingest the main reports.
+
+        These are the marquee IMM publications (annual + quarterly), which live under
+        /reports/PJM_State_of_the_Market/{year}.shtml — a different path from /filings/.
+        """
+        url = f"{_SOM_BASE}/{year}.shtml"
+        try:
+            resp = await client.get(url)
+            if resp.status_code == 404:
+                return []
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return []
+            raise
+
+        if not resp.text.strip():
+            logger.warning(
+                "ImmAdapter: SOM %s returned an empty body — structure may have changed", url
+            )
+            return []
+        return self._parse_som_page(resp.text, year, since_date, url)
+
+    def _parse_som_page(
+        self, html: str, year: int, since_date: date, page_url: str
+    ) -> list[RawFiling]:
+        tree = HTMLParser(html)
+        filings: list[RawFiling] = []
+        seen: set[str] = set()
+
+        for a in tree.css("a[href]"):
+            href = a.attributes.get("href", "")
+            if not href.lower().endswith(".pdf"):
+                continue
+            filename = href.split("/")[-1]
+            if not filename:
+                continue
+
+            period_end, label = _parse_som_filename(filename)
+            if period_end is None or period_end < since_date:
+                continue
+
+            external_id = filename[:-4] if filename.lower().endswith(".pdf") else filename
+            if external_id in seen:
+                continue
+            seen.add(external_id)
+
+            filings.append(
+                RawFiling(
+                    source_slug="imm",
+                    external_id=external_id,
+                    doc_type="imm-state-of-market",
+                    title=label or _make_title(filename, [], period_end),
+                    source_url=urljoin(page_url, href),
+                    filed_at=datetime.combine(period_end, datetime.min.time())
+                    .replace(tzinfo=UTC)
+                    .isoformat(),
+                    content=b"",  # deferred R2 — uploaded at extraction time
+                    file_ext="pdf",
+                    metadata={
+                        "docket_numbers": [],
+                        "raw_filename": filename,
+                        "year": year,
+                        "report": True,
+                    },
+                )
+            )
+
+        logger.info(
+            "ImmAdapter: SOM year=%d parsed %d report(s) (since=%s)", year, len(filings), since_date
         )
         return filings
