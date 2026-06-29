@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 async def handle_crawl_imm(payload: dict) -> dict:
-    result = await run_adapter(ImmAdapter(), "imm", payload.get("since"))
+    # Forward max_filings so a backfill ({"since": "2025-01-01", "max_filings": N})
+    # bypasses run_adapter's 3-day rolling-lookback cap and ingests the back-catalog.
+    # Daily cron passes no max_filings → normal incremental (3-day window).
+    result = await run_adapter(
+        ImmAdapter(),
+        "imm",
+        payload.get("since"),
+        max_filings=payload.get("max_filings"),
+    )
     logger.info("IMM crawl complete: %s", result)
     return result
