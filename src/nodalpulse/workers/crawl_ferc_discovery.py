@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 from nodalpulse.crawlers.ferc_discovery import fetch_ferc_discovery
 from nodalpulse.db.discovery import cleanup_expired_discovery, upsert_discovery_items
+from nodalpulse.workers.classify_discovery import classify_new_discovery_items
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,15 @@ async def handle_crawl_ferc_discovery(payload: dict) -> dict:
     saved, skipped = await upsert_discovery_items(items)
     cleaned = await cleanup_expired_discovery()
 
+    # B3: theme-classify newly-saved (unthemed) rows with a cheap Haiku pass.
+    themed = await classify_new_discovery_items(limit=_DISCOVERY_MAX_FILINGS)
+
     result = {
         "fetched": len(items),
         "saved": saved,
         "skipped": skipped,
         "cleaned": cleaned,
+        "themed": themed,
         "since": since,
     }
     logger.info("crawl-ferc-discovery complete: %s", result)
