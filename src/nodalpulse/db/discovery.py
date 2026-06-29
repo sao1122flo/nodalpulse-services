@@ -158,3 +158,60 @@ async def get_discovery_hits(
         len(hits),
     )
     return hits
+
+
+# ── Theme classification (B3) ─────────────────────────────────────────────────
+
+
+async def get_active_themes() -> list[dict]:
+    """Curated theme taxonomy (id, key, label, definition) ordered for the prompt."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(
+                "SELECT id::text AS id, key, label, definition "
+                "FROM themes WHERE active ORDER BY sort_order"
+            )
+        )
+        return [dict(r) for r in result.mappings().fetchall()]
+
+
+async def get_unclassified_discovery(limit: int) -> list[dict]:
+    """discovery_feed rows not yet run through the theme classifier (themed_at NULL)."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT id::text AS id, accession, description, doc_type, docket_numbers
+                FROM discovery_feed
+                WHERE themed_at IS NULL AND expires_at > NOW()
+                ORDER BY filed_at DESC
+                LIMIT :lim
+            """),
+            {"lim": limit},
+        )
+        return [dict(r) for r in result.mappings().fetchall()]
+
+
+async def save_discovery_matches(
+    discovery_id: str,
+    matches: list[tuple[str, str | None]],
+) -> None:
+    """Persist (theme_id, evidence_snippet) matches for a row and mark it themed.
+
+    themed_at is set regardless of match count so 0-match rows are never
+    re-classified. evidence_snippet is NULL when no verbatim quote was found (G1).
+    """
+    async with AsyncSessionLocal() as session:
+        for theme_id, snippet in matches:
+            await session.execute(
+                text("""
+                    INSERT INTO discovery_matches (discovery_id, theme_id, evidence_snippet)
+                    VALUES (CAST(:d AS uuid), CAST(:t AS uuid), :s)
+                    ON CONFLICT (discovery_id, theme_id) DO NOTHING
+                """),
+                {"d": discovery_id, "t": theme_id, "s": snippet},
+            )
+        await session.execute(
+            text("UPDATE discovery_feed SET themed_at = NOW() WHERE id = CAST(:d AS uuid)"),
+            {"d": discovery_id},
+        )
+        await session.commit()
