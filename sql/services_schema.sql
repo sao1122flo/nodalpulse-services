@@ -31,7 +31,8 @@ INSERT INTO sources (slug, label, base_url) VALUES
   ('caiso',      'CAISO Regulatory Filings',                  'https://www.caiso.com/legal-regulatory/regulatory-filings-orders/filings'),
   ('cpuc',       'CPUC Document Search',                      'https://docs.cpuc.ca.gov'),
   ('pjm',        'PJM FERC Filings',                          'https://elibrary.ferc.gov'),
-  ('imm',        'PJM IMM (Monitoring Analytics)',            'https://www.monitoringanalytics.com/filings')
+  ('imm',        'PJM IMM (Monitoring Analytics)',            'https://www.monitoringanalytics.com/filings'),
+  ('njbpu',      'NJ Board of Public Utilities',              'https://publicaccess.bpu.state.nj.us')
 ON CONFLICT (slug) DO NOTHING;
 
 -- ─────────────────────────────────────────────
