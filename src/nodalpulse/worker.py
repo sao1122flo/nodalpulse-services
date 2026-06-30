@@ -18,6 +18,7 @@ from nodalpulse.workers.crawl_njbpu import handle_crawl_njbpu
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_pjm_calendar import handle_crawl_pjm_calendar
 from nodalpulse.workers.extract import handle_extract
+from nodalpulse.workers.probe_source import handle_probe_source
 from nodalpulse.workers.refresh_extraction import handle_refresh_extraction
 from nodalpulse.workers.salience import handle_compute_salience
 
@@ -45,6 +46,7 @@ HANDLERS = {
     "compose-brief": handle_compose_brief,
     "brief-history-export": handle_brief_history_export,
     "compute-market-salience": handle_compute_salience,
+    "probe-source": handle_probe_source,
 }
 
 
