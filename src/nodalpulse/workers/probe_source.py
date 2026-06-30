@@ -23,6 +23,27 @@ _UA = (
 )
 
 
+def _dump_text(text: str, label: str = "JS") -> None:
+    """Dump full JS/JSON/text content in numbered chunks so a single probe
+    captures a whole SPA module (the HTML _analyze() snippet is too short)."""
+    logger.info("PROBE %s: bytes=%d", label, len(text))
+    # surface likely API call sites first for quick scanning
+    for pat in (
+        r'(?:url|baseUrl|apiUrl|endpoint)\s*[:=]\s*["\']([^"\']+)["\']',
+        r'(?:get|post|ajax|fetch|http\.(?:get|post))\s*\(\s*["\']([^"\']+)["\']',
+        r'moduleId\s*:\s*["\']([^"\']+)["\']',
+        r'route\s*:\s*["\']([^"\']*)["\']',
+        r'["\'](/?[A-Za-z0-9_./-]*(?:api|svc|ashx|asmx|Search|Docket|Case)[A-Za-z0-9_./-]*)["\']',
+    ):
+        found = re.findall(pat, text, re.I)[:12]
+        if found:
+            logger.info("PROBE %s match %s -> %s", label, pat[:26], found)
+    # full body in chunks
+    chunk = 1400
+    for i in range(0, min(len(text), chunk * 14), chunk):
+        logger.info("PROBE %s[%04d]: %s", label, i, text[i : i + chunk])
+
+
 def _analyze(html: str) -> None:
     logger.info("PROBE: bytes=%d", len(html))
     logger.info("PROBE: webforms=%s axd=%s", "__VIEWSTATE" in html, ".axd" in html)
@@ -98,13 +119,25 @@ async def handle_probe_source(payload: dict) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("PROBE: request failed: %s: %s", type(exc).__name__, exc)
             return {"ok": False, "error": str(exc)}
+        ct = r.headers.get("content-type", "")
         logger.info(
-            "PROBE: status=%s final_url=%s server=%s cf-pop=%s cookies=%s",
+            "PROBE: status=%s final_url=%s server=%s cf-pop=%s ct=%s cookies=%s",
             r.status_code,
             str(r.url),
             r.headers.get("server"),
             r.headers.get("x-amz-cf-pop", ""),
+            ct,
             list(r.cookies.keys()),
         )
-        _analyze(r.text)
+        low = url.lower().split("?")[0]
+        is_code = (
+            low.endswith((".js", ".json", ".mjs"))
+            or "javascript" in ct
+            or "json" in ct
+            or (r.text[:1] in "{[" and "html" not in ct)
+        )
+        if is_code:
+            _dump_text(r.text, "JSON" if "json" in ct or low.endswith(".json") else "JS")
+        else:
+            _analyze(r.text)
     return {"ok": True, "status": r.status_code}
