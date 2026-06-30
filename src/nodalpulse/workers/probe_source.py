@@ -63,6 +63,22 @@ def _analyze(html: str) -> None:
         found = re.findall(pat, html)[:5]
         if found:
             logger.info("PROBE match %s -> %s", pat[:22], found)
+    # SPA / API discovery: scripts, app roots, api hints, links
+    for s in re.findall(r'<script[^>]*src="([^"]+)"', html)[:12]:
+        logger.info("PROBE script: %s", s[:120])
+    for fw in ("ng-version", "ng-app", "data-reactroot", "__NEXT_DATA__", "window.__", "vue"):
+        if fw in html:
+            logger.info("PROBE framework-marker: %s", fw)
+    for api in re.findall(
+        r'["\'](/[A-Za-z0-9_./-]*(?:api|json|svc|ashx|search|docket|case)[A-Za-z0-9_./-]*)["\']',
+        html,
+        re.I,
+    )[:15]:
+        logger.info("PROBE api-hint: %s", api[:120])
+    for href in re.findall(r'href="(/[^"]+|https?://[^"]+)"', html)[:18]:
+        logger.info("PROBE href: %s", href[:120])
+    body = re.sub(r"<[^>]+>", " ", html)
+    logger.info("PROBE body-snippet: %s", re.sub(r"\s+", " ", body).strip()[:700])
 
 
 async def handle_probe_source(payload: dict) -> dict:
