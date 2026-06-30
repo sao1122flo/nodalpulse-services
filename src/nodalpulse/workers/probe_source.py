@@ -14,8 +14,38 @@ import logging
 import re
 
 import httpx
+from sqlalchemy import text
+
+from nodalpulse.db.engine import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+
+async def _persist(url: str, status: int, ct: str, body: str) -> None:
+    """Store the full fetched body in a probe_results table so it can be read
+    directly via SQL — Railway drops log lines above 500/sec, which truncates
+    the chunked dumps when a crawl is logging concurrently."""
+    try:
+        async with AsyncSessionLocal() as s:
+            await s.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS probe_results ("
+                    "id bigserial PRIMARY KEY, url text, status int, "
+                    "content_type text, body text, fetched_at timestamptz DEFAULT now())"
+                )
+            )
+            await s.execute(
+                text(
+                    "INSERT INTO probe_results (url, status, content_type, body) "
+                    "VALUES (:u, :s, :c, :b)"
+                ),
+                {"u": url, "s": status, "c": ct, "b": body[:2_000_000]},
+            )
+            await s.commit()
+        logger.info("PROBE: persisted %d bytes to probe_results for %s", len(body), url)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PROBE: persist failed: %s: %s", type(exc).__name__, exc)
+
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -38,9 +68,9 @@ def _dump_text(text: str, label: str = "JS") -> None:
         found = re.findall(pat, text, re.I)[:12]
         if found:
             logger.info("PROBE %s match %s -> %s", label, pat[:26], found)
-    # full body in chunks
+    # short head in chunks (full body lives in probe_results table)
     chunk = 1400
-    for i in range(0, min(len(text), chunk * 14), chunk):
+    for i in range(0, min(len(text), chunk * 3), chunk):
         logger.info("PROBE %s[%04d]: %s", label, i, text[i : i + chunk])
 
 
@@ -129,6 +159,7 @@ async def handle_probe_source(payload: dict) -> dict:
             ct,
             list(r.cookies.keys()),
         )
+        await _persist(url, r.status_code, ct, r.text)
         low = url.lower().split("?")[0]
         is_code = (
             low.endswith((".js", ".json", ".mjs"))
