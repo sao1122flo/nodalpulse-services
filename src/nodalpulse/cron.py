@@ -105,9 +105,11 @@ async def _tick(now_ct: datetime) -> None:
                     await enqueue("crawl-pjm", {"since": since_date}, priority=10)
                     await enqueue("crawl-imm", {"since": since_date}, priority=10)
                     await enqueue("crawl-pjm-calendar", {}, priority=10)
+                    await enqueue("crawl-njbpu", {"since": since_date}, priority=10)
                 else:
                     logger.info(
-                        "No PJM subscribers — skipping crawl-pjm/imm/pjm-calendar for %s", today
+                        "No PJM subscribers — skipping crawl-pjm/imm/pjm-calendar/njbpu for %s",
+                        today,
                     )
 
                 await mark_crawl_done_for(today)
@@ -195,6 +197,7 @@ async def _startup_catchup(now_ct: datetime) -> None:
                 await enqueue("crawl-pjm", {"since": since_date}, priority=10)
                 await enqueue("crawl-imm", {"since": since_date}, priority=10)
                 await enqueue("crawl-pjm-calendar", {}, priority=10)
+                await enqueue("crawl-njbpu", {"since": since_date}, priority=10)
             await mark_crawl_done_for(today)
             logger.info(
                 "Startup catch-up: enqueued crawls for %s (caiso=%s, pjm=%s, since=%s)",
