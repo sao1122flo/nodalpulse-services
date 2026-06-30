@@ -45,6 +45,7 @@ Electric scope:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -62,7 +63,9 @@ _SEARCH_URL = f"{_BASE_URL}/Search.aspx"
 _RESULTS_URL = f"{_BASE_URL}/SearchDocResults.aspx"
 _DOC_URL = f"{_BASE_URL}/DocumentHandler.ashx?document_id="
 _PAGE_SIZE = 30
-_MAX_PAGES = 60  # hard cap: 60×30 = 1800 docs per crawl tick
+_MAX_PAGES = 60  # hard cap per prefix: 60×30 = 1800 docs
+_PAGE_DELAY = 1.5  # polite delay between pagination POSTs — Incapsula throttles rapid
+# datacenter-IP POSTs (a 4th rapid POST hung 60s in prod); the delay + retry avoid it.
 
 _ET = ZoneInfo("America/New_York")
 
@@ -82,6 +85,16 @@ _F = "ctl00$ContentPlaceHolder1$searchFilter$"
 # E* = electric (ER rate, EO other, EM misc, EA, EE); QO/QX = clean-energy (solar,
 # storage, OSW) which is grid-relevant. G*/W*/T* (gas/water/telecom) are dropped.
 _ELECTRIC_PREFIXES = ("E", "QO", "QX")
+
+# Server-side electric filter: the Advanced AdvanceCaseNumber field does a docket
+# PREFIX match (verified: "EO" → only EO*; a single "E" is too broad — it substring-
+# matches "CE..."). So we query each 2-letter electric prefix and union the results,
+# instead of pulling the whole cross-industry firehose and filtering client-side. That
+# was the bug a backfill exposed: the grid's default sort is docket-ascending, so over a
+# wide window the E* dockets sort *after* hundreds of A*/C*/G* rows — pagination died
+# before reaching them and the client filter dropped every row it had. Querying by prefix
+# means every fetched row is already in scope. Nonexistent prefixes harmlessly return 0.
+_QUERY_PREFIXES = ("ER", "EO", "EM", "EE", "EF", "ET", "EW", "EA", "EX", "QO")
 
 # Folder (DMS document category) → normalized doc_type. Ordered: first substring wins.
 _DOC_TYPE_MAP: list[tuple[str, str]] = [
@@ -248,11 +261,13 @@ def _to_filing(row: dict) -> RawFiling:
 
 
 class NjBpuAdapter(MarketAdapter):
-    """NJ BPU public-document firehose adapter (date-range, electric-scoped).
+    """NJ BPU public-document adapter — electric-scoped, server-side filtered.
 
-    Unlike CpucAdapter (per-proceeding watch set), this is a pure firehose: one
-    Advanced search over the posted-date window returns every new document, which
-    we then scope to electric dockets. No watch set needed.
+    Not a raw firehose (that buried electric dockets behind a docket-ascending sort
+    and died on pagination). Instead, one Advanced search per electric docket prefix
+    (AdvanceCaseNumber prefix match) over the posted-date window, unioned. Like
+    CpucAdapter it reuses one Incapsula/session warm-up; unlike it there is no watch
+    set — the electric prefix list is the scope.
     """
 
     source_slug = "njbpu"
@@ -263,72 +278,78 @@ class NjBpuAdapter(MarketAdapter):
         )
         d_from = since_date.strftime("%m/%d/%Y")
         d_to = date.today().strftime("%m/%d/%Y")
-        logger.info("NjBpuAdapter: firehose %s..%s", d_from, d_to)
+        logger.info("NjBpuAdapter: %s..%s prefixes=%s", d_from, d_to, list(_QUERY_PREFIXES))
 
+        all_rows: list[dict] = []
         async with httpx.AsyncClient(
             base_url=_BASE_URL, follow_redirects=True, timeout=60, headers=_HEADERS
         ) as client:
-            # Warm-up GET establishes Incapsula + session cookies (via Set-Cookie).
+            # Warm-up GET establishes Incapsula + session cookies (via Set-Cookie headers).
             try:
                 await client.get(_SEARCH_URL)
-                form = await client.get(_SEARCH_URL)
-                form.raise_for_status()
             except Exception:
-                logger.exception("NjBpuAdapter: GET Search.aspx failed — aborting tick")
+                logger.exception("NjBpuAdapter: warm-up GET failed — aborting tick")
                 return []
 
-            vs = extract_viewstate(form.text)
-            if not vs["__VIEWSTATE"] or not vs["__EVENTVALIDATION"]:
-                logger.error("NjBpuAdapter: viewstate missing from form page — site drift?")
-                return []
+            for prefix in _QUERY_PREFIXES:
+                try:
+                    rows = await self._search_prefix(client, prefix, d_from, d_to)
+                    all_rows.extend(rows)
+                except Exception:
+                    logger.exception("NjBpuAdapter: prefix %s failed", prefix)
 
-            payload = {
-                "__EVENTTARGET": "",
-                "__EVENTARGUMENT": "",
-                **vs,
-                f"{_F}searchType": "Advanced",
-                f"{_F}SearchText": "",
-                f"{_F}AdvanceCaseNumber": "",
-                f"{_F}AdvanceDocumentTitle": "",
-                f"{_F}AdvancePartyName": "",
-                f"{_F}AdvanceKeyword": "",
-                f"{_F}OpenDateFrom": d_from,
-                f"{_F}OpenDateTo": d_to,
-                f"{_F}ListType": "Document",
-                f"{_F}btnAdvanceSearch": "Search",
-            }
-            try:
-                # The `Origin` header is REQUIRED — Incapsula 500s the POST without it.
-                res = await client.post(
-                    _SEARCH_URL,
-                    data=payload,
-                    headers={"Origin": _BASE_URL, "Referer": _SEARCH_URL},
-                )
-                res.raise_for_status()
-            except Exception:
-                logger.exception("NjBpuAdapter: search POST failed")
-                return []
+        return self._finalize(all_rows, d_from, d_to)
 
-            if "Error.aspx" in str(res.url) or "cannot process this request" in res.text:
-                logger.error(
-                    "NjBpuAdapter: origin returned Error.aspx — Incapsula/Origin or viewstate "
-                    "drift (check the Origin header and the __VIEWSTATE field names)"
-                )
-                return []
+    async def _search_prefix(
+        self, client: httpx.AsyncClient, prefix: str, d_from: str, d_to: str
+    ) -> list[dict]:
+        """GET fresh viewstate, POST an Advanced docket-prefix search, paginate."""
+        form = await client.get(_SEARCH_URL)
+        form.raise_for_status()
+        vs = extract_viewstate(form.text)
+        if not vs["__VIEWSTATE"] or not vs["__EVENTVALIDATION"]:
+            logger.error("NjBpuAdapter: viewstate missing from form page (prefix=%s)", prefix)
+            return []
 
-            all_rows = await self._collect_pages(client, res.text)
+        payload = {
+            "__EVENTTARGET": "",
+            "__EVENTARGUMENT": "",
+            **vs,
+            f"{_F}searchType": "Advanced",
+            f"{_F}SearchText": "",
+            f"{_F}AdvanceCaseNumber": prefix,
+            f"{_F}AdvanceDocumentTitle": "",
+            f"{_F}AdvancePartyName": "",
+            f"{_F}AdvanceKeyword": "",
+            f"{_F}OpenDateFrom": d_from,
+            f"{_F}OpenDateTo": d_to,
+            f"{_F}ListType": "Document",
+            f"{_F}btnAdvanceSearch": "Search",
+        }
+        # The `Origin` header is REQUIRED — Incapsula 500s the POST without it.
+        res = await client.post(
+            _SEARCH_URL, data=payload, headers={"Origin": _BASE_URL, "Referer": _SEARCH_URL}
+        )
+        res.raise_for_status()
+        if "Error.aspx" in str(res.url) or "cannot process this request" in res.text:
+            logger.error(
+                "NjBpuAdapter: origin Error.aspx for prefix=%s — Incapsula/Origin or viewstate "
+                "drift (check the Origin header and __VIEWSTATE field names)",
+                prefix,
+            )
+            return []
+        return await self._collect_pages(client, res.text, prefix)
 
-        return self._finalize(all_rows, since_date, d_from, d_to)
-
-    async def _collect_pages(self, client: httpx.AsyncClient, first_html: str) -> list[dict]:
+    async def _collect_pages(
+        self, client: httpx.AsyncClient, first_html: str, label: str
+    ) -> list[dict]:
         """Walk the gvSearchRs pager via __doPostBack until exhausted or capped."""
         total = parse_total(first_html)
         rows = parse_results(first_html)
-        if not rows and total != 0:
-            # Table absent but the count marker didn't say "0" — structure drift.
+        if not rows and total not in (0, None):
             logger.warning(
-                "NjBpuAdapter: results table not found on page 1 (total=%s) — possible site "
-                "drift; treating as zero this tick",
+                "NjBpuAdapter: results table missing on page 1 (prefix=%s total=%s) — site drift?",
+                label,
                 total,
             )
             return []
@@ -340,20 +361,15 @@ class NjBpuAdapter(MarketAdapter):
             if not target:
                 break
             vs = extract_viewstate(html)
-            try:
-                r = await client.post(
-                    _RESULTS_URL,
-                    data={"__EVENTTARGET": target, "__EVENTARGUMENT": "", **vs},
-                    headers={"Origin": _BASE_URL, "Referer": _RESULTS_URL},
-                )
-                r.raise_for_status()
-            except Exception as exc:
+            await asyncio.sleep(_PAGE_DELAY)  # polite — dodge the Incapsula POST throttle
+            r = await self._post_page(client, target, vs)
+            if r is None:
                 logger.warning(
-                    "NjBpuAdapter: pagination POST failed on page %d (%s) — returning %d rows "
-                    "collected so far",
+                    "NjBpuAdapter: pagination failed prefix=%s at page %d — keeping %d of %d",
+                    label,
                     page + 1,
-                    exc,
                     len(rows),
+                    total,
                 )
                 break
             page_rows = parse_results(r.text)
@@ -365,49 +381,68 @@ class NjBpuAdapter(MarketAdapter):
 
         if total is not None and len(rows) < total and page >= _MAX_PAGES:
             logger.warning(
-                "NjBpuAdapter: hit page cap (%d) — collected %d of %d total",
+                "NjBpuAdapter: prefix=%s hit page cap (%d) — collected %d of %d",
+                label,
                 _MAX_PAGES,
                 len(rows),
                 total,
             )
         return rows
 
-    def _finalize(
-        self, rows: list[dict], since_date: date, d_from: str, d_to: str
-    ) -> list[RawFiling]:
-        """Dedup by document_id, scope to electric dockets, emit RawFilings."""
+    async def _post_page(
+        self, client: httpx.AsyncClient, target: str, vs: dict[str, str]
+    ) -> httpx.Response | None:
+        """POST one pager step, retrying once — the datacenter-IP throttle hangs sporadically."""
+        data = {"__EVENTTARGET": target, "__EVENTARGUMENT": "", **vs}
+        headers = {"Origin": _BASE_URL, "Referer": _RESULTS_URL}
+        for attempt in range(2):
+            try:
+                r = await client.post(_RESULTS_URL, data=data, headers=headers, timeout=30)
+                r.raise_for_status()
+                return r
+            except Exception as exc:
+                if attempt == 0:
+                    await asyncio.sleep(3)
+                    continue
+                logger.warning("NjBpuAdapter: pager POST failed after retry (%s)", exc)
+        return None
+
+    def _finalize(self, rows: list[dict], d_from: str, d_to: str) -> list[RawFiling]:
+        """Dedup by document_id; client electric check is a safety net over the prefix query."""
         seen: set[str] = set()
         electric: list[dict] = []
-        dropped_non_electric = 0
+        dropped = 0
         for row in rows:
             if row["document_id"] in seen:
                 continue
             seen.add(row["document_id"])
             if row["docket"] and not is_electric(row["docket"]):
-                dropped_non_electric += 1
+                dropped += 1  # should be ~0 — server already scoped by prefix
                 continue
             electric.append(row)
 
         filings = [_to_filing(r) for r in electric]
 
-        # Anti-silent-zero floor: a normally-productive firehose that returns zero is
-        # logged loudly, never swallowed. (The dormant-IMM/PJM-calendar lesson.)
+        # Anti-silent-zero floor: a normally-productive crawl returning zero is logged
+        # loudly, never swallowed. (The dormant-IMM/PJM-calendar + this-backfill lesson.)
         if not filings:
             logger.warning(
-                "NjBpuAdapter: ZERO electric filings for %s..%s (raw_rows=%d, "
-                "dropped_non_electric=%d) — verify the source is live and the parser still "
-                "matches (gvSearchRs / DocumentHandler / Posted Date)",
+                "NjBpuAdapter: ZERO electric filings for %s..%s (raw_rows=%d, dropped=%d) — "
+                "verify the source is live and the parser still matches (gvSearchRs / "
+                "DocumentHandler / Posted Date) and the prefix queries still return rows",
                 d_from,
                 d_to,
                 len(rows),
-                dropped_non_electric,
+                dropped,
             )
         else:
             logger.info(
-                "NjBpuAdapter: %d electric filings (%d non-electric dropped, %d raw rows) %s..%s",
+                "NjBpuAdapter: %d electric filings (%d dropped, %d raw rows across %d prefixes) "
+                "%s..%s",
                 len(filings),
-                dropped_non_electric,
+                dropped,
                 len(rows),
+                len(_QUERY_PREFIXES),
                 d_from,
                 d_to,
             )
