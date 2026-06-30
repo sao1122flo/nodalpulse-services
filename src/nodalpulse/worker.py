@@ -13,6 +13,7 @@ from nodalpulse.workers.crawl_ercot import handle_crawl_ercot
 from nodalpulse.workers.crawl_ferc import handle_crawl_ferc
 from nodalpulse.workers.crawl_ferc_discovery import handle_crawl_ferc_discovery
 from nodalpulse.workers.crawl_imm import handle_crawl_imm
+from nodalpulse.workers.crawl_mdpsc import handle_crawl_mdpsc
 from nodalpulse.workers.crawl_njbpu import handle_crawl_njbpu
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_pjm_calendar import handle_crawl_pjm_calendar
@@ -37,6 +38,7 @@ HANDLERS = {
     "crawl-pjm": handle_crawl_pjm,
     "crawl-imm": handle_crawl_imm,
     "crawl-njbpu": handle_crawl_njbpu,
+    "crawl-mdpsc": handle_crawl_mdpsc,
     "crawl-pjm-calendar": handle_crawl_pjm_calendar,
     "extract": handle_extract,
     "refresh-extraction": handle_refresh_extraction,

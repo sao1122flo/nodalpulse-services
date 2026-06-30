@@ -41,6 +41,7 @@ _SOURCE_JURISDICTION: dict[str, str] = {
     "imm": "PJM-FERC",  # T9 — IMM files at FERC; dockets are PJM-FERC
     "cpuc": "CPUC",  # #79
     "njbpu": "NJ-BPU",  # PJM Wave 1 — NJ state PUC (per-state label, not "PJM")
+    "mdpsc": "MD-PSC",  # PJM Wave 1 — MD state PUC (per-state label, not "PJM")
 }
 
 
