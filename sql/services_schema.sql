@@ -32,7 +32,8 @@ INSERT INTO sources (slug, label, base_url) VALUES
   ('cpuc',       'CPUC Document Search',                      'https://docs.cpuc.ca.gov'),
   ('pjm',        'PJM FERC Filings',                          'https://elibrary.ferc.gov'),
   ('imm',        'PJM IMM (Monitoring Analytics)',            'https://www.monitoringanalytics.com/filings'),
-  ('njbpu',      'NJ Board of Public Utilities',              'https://publicaccess.bpu.state.nj.us')
+  ('njbpu',      'NJ Board of Public Utilities',              'https://publicaccess.bpu.state.nj.us'),
+  ('mdpsc',      'MD Public Service Commission',              'https://webpscxb.pscmaryland.com')
 ON CONFLICT (slug) DO NOTHING;
 
 -- ─────────────────────────────────────────────

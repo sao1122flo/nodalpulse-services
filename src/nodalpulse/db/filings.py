@@ -163,6 +163,21 @@ async def get_cpuc_docket_set() -> set[str]:
         return normalized
 
 
+async def get_mdpsc_docket_set() -> set[str]:
+    """Return MD PSC case numbers (jurisdiction='MD-PSC') — the electric-case watch set.
+
+    These are cases an electric utility has filed in, registered as dockets on prior
+    crawls. The MD adapter unions this with the electric cases it discovers in the
+    current window, so Commission orders / intervener filings land for known electric
+    cases even when no utility files in the same window.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT external_id FROM dockets WHERE jurisdiction = 'MD-PSC'"),
+        )
+        return {(raw or "").strip() for (raw,) in result.fetchall() if (raw or "").strip()}
+
+
 async def get_pjm_ferc_docket_set() -> set[str]:
     """Return curated PJM-FERC docket external_ids for the daily crawl watch set.
 
