@@ -33,7 +33,8 @@ INSERT INTO sources (slug, label, base_url) VALUES
   ('pjm',        'PJM FERC Filings',                          'https://elibrary.ferc.gov'),
   ('imm',        'PJM IMM (Monitoring Analytics)',            'https://www.monitoringanalytics.com/filings'),
   ('njbpu',      'NJ Board of Public Utilities',              'https://publicaccess.bpu.state.nj.us'),
-  ('mdpsc',      'MD Public Service Commission',              'https://webpscxb.pscmaryland.com')
+  ('mdpsc',      'MD Public Service Commission',              'https://webpscxb.pscmaryland.com'),
+  ('vascc',      'VA State Corporation Commission',           'https://www.scc.virginia.gov/docketsearch')
 ON CONFLICT (slug) DO NOTHING;
 
 -- ─────────────────────────────────────────────

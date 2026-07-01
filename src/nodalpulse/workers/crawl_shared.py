@@ -42,6 +42,7 @@ _SOURCE_JURISDICTION: dict[str, str] = {
     "cpuc": "CPUC",  # #79
     "njbpu": "NJ-BPU",  # PJM Wave 1 — NJ state PUC (per-state label, not "PJM")
     "mdpsc": "MD-PSC",  # PJM Wave 1 — MD state PUC (per-state label, not "PJM")
+    "vascc": "VA-SCC",  # PJM Wave 1 — VA state SCC (per-state label, not "PJM")
 }
 
 

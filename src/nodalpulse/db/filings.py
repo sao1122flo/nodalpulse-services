@@ -178,6 +178,21 @@ async def get_mdpsc_docket_set() -> set[str]:
         return {(raw or "").strip() for (raw,) in result.fetchall() if (raw or "").strip()}
 
 
+async def get_vascc_docket_set() -> set[str]:
+    """Return VA SCC case numbers (jurisdiction='VA-SCC') — the electric-case watch set.
+
+    The VA adapter scopes electric coverage primarily by CaseName (every row carries
+    the case's regulated utility), but unions this watch set so a hand-added case whose
+    CaseName is not an electric utility (e.g. a developer-named transmission / data-
+    center docket) is still captured in full across windows.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("SELECT external_id FROM dockets WHERE jurisdiction = 'VA-SCC'"),
+        )
+        return {(raw or "").strip() for (raw,) in result.fetchall() if (raw or "").strip()}
+
+
 async def get_pjm_ferc_docket_set() -> set[str]:
     """Return curated PJM-FERC docket external_ids for the daily crawl watch set.
 
