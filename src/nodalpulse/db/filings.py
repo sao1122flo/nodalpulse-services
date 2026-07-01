@@ -74,6 +74,41 @@ async def get_last_crawled_at(source_slug: str) -> str | None:
         return result.scalar_one_or_none()
 
 
+async def stamp_last_crawled_at(
+    docket_ids: set[str] | None = None,
+    *,
+    source_id: str | None = None,
+    external_ids: set[str] | None = None,
+) -> None:
+    """Mark dockets as crawled NOW — the durable per-docket signal that separates
+    "crawled, 0 results" from "never crawled" for the Record page's warming states.
+
+    Two complementary scopes, both stamped even on a 0-result crawl:
+    - docket_ids: dockets that received >=1 filing this run (touched) — universal,
+      set by every crawl (scheduled + on-demand) for populated dockets.
+    - external_ids (with source_id): dockets the crawl explicitly *targeted* (on-demand
+      control_numbers, or a watch set) whether or not they produced filings — this is
+      what stamps a genuinely-empty tracked docket so it shows "No filings yet", not a
+      perpetual spinner.
+    """
+    async with AsyncSessionLocal() as session:
+        if docket_ids:
+            await session.execute(
+                # id::text (not id) so the text[] param matches without a uuid cast.
+                text("UPDATE dockets SET last_crawled_at = NOW() WHERE id::text = ANY(:ids)"),
+                {"ids": list(docket_ids)},
+            )
+        if external_ids and source_id:
+            await session.execute(
+                text(
+                    "UPDATE dockets SET last_crawled_at = NOW() "
+                    "WHERE source_id = :sid AND external_id = ANY(:exts)"
+                ),
+                {"sid": source_id, "exts": list(external_ids)},
+            )
+        await session.commit()
+
+
 async def find_or_create_docket(
     source_id: str,
     docket_number: str,

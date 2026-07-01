@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from nodalpulse.api.auth import verify_bearer
-from nodalpulse.api.crawl_probes import probe_cpuc, probe_ferc
+from nodalpulse.api.crawl_probes import probe_cpuc, probe_ferc, probe_puct
 from nodalpulse.api.qna import QnaRequest, handle_qna
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
 from nodalpulse.db.engine import AsyncSessionLocal
@@ -859,12 +859,12 @@ async def refresh_docket(body: RefreshDocketRequest) -> JSONResponse:
 _ON_DEMAND_MAX_FILINGS = int(os.environ.get("ON_DEMAND_MAX_FILINGS", "30"))
 _ON_DEMAND_SINCE = os.environ.get("ON_DEMAND_SINCE", "2020-01-01")
 _ON_DEMAND_RATE_CAP = int(os.environ.get("ON_DEMAND_USER_HOURLY_CAP", "3"))
-_ON_DEMAND_ALLOWED = frozenset({"cpuc", "ferc"})
+_ON_DEMAND_ALLOWED = frozenset({"cpuc", "ferc", "puct"})
 
 
 class OnDemandCrawlRequest(BaseModel):
-    source_slug: str  # "cpuc" | "ferc"
-    proceeding_id: str  # e.g. "A2508008", "EL25-49"
+    source_slug: str  # "cpuc" | "ferc" | "puct"
+    proceeding_id: str  # e.g. "A2508008", "EL25-49", "58481" (PUCT control number)
     user_id: str  # advisory — bearer token is the security boundary
 
 
@@ -892,7 +892,7 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
         rate_result = await db_session.execute(
             text("""
                 SELECT COUNT(*) FROM jobs
-                WHERE kind IN ('crawl-cpuc', 'crawl-ferc')
+                WHERE kind IN ('crawl-cpuc', 'crawl-ferc', 'crawl-puct')
                   AND payload->>'user_id' = :user_id
                   AND created_at >= NOW() - INTERVAL '1 hour'
             """),
@@ -913,6 +913,8 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
     # Step 1 — inline probe: confirm the proceeding has filings in the source
     if body.source_slug == "cpuc":
         found = await probe_cpuc(body.proceeding_id)
+    elif body.source_slug == "puct":
+        found = await probe_puct(body.proceeding_id)
     else:  # ferc
         found = await probe_ferc(body.proceeding_id)
 
@@ -931,7 +933,7 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
         logger.error("crawl-on-demand: source '%s' not found in sources table", body.source_slug)
         return JSONResponse({"error": "source_not_configured"}, status_code=500)
 
-    jurisdiction = "CPUC" if body.source_slug == "cpuc" else "FERC"
+    jurisdiction = {"cpuc": "CPUC", "ferc": "FERC", "puct": "PUCT"}[body.source_slug]
     docket_id = await find_or_create_docket(source_id, body.proceeding_id, jurisdiction)
 
     # Step 3 — enqueue parametrized backfill.
@@ -940,20 +942,15 @@ async def crawl_on_demand(body: OnDemandCrawlRequest) -> JSONResponse:
     # reaching well beyond MAX_LOOKBACK_DAYS; run_adapter bypasses the lookback cap when
     # max_filings is set so this date is respected as-is.
     job_kind = f"crawl-{body.source_slug}"
-    if body.source_slug == "cpuc":
-        job_payload = {
-            "proc_numbers": [body.proceeding_id],
-            "since": _ON_DEMAND_SINCE,
-            "max_filings": _ON_DEMAND_MAX_FILINGS,
-            "user_id": body.user_id,
-        }
-    else:
-        job_payload = {
-            "docket_numbers": [body.proceeding_id],
-            "since": _ON_DEMAND_SINCE,
-            "max_filings": _ON_DEMAND_MAX_FILINGS,
-            "user_id": body.user_id,
-        }
+    _ref_key = {"cpuc": "proc_numbers", "ferc": "docket_numbers", "puct": "control_numbers"}[
+        body.source_slug
+    ]
+    job_payload = {
+        _ref_key: [body.proceeding_id],
+        "since": _ON_DEMAND_SINCE,
+        "max_filings": _ON_DEMAND_MAX_FILINGS,
+        "user_id": body.user_id,
+    }
 
     await enqueue(job_kind, job_payload, priority=7)
 

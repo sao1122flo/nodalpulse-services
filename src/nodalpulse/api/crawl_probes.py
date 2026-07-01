@@ -33,11 +33,52 @@ from nodalpulse.crawlers.ferc import (
 from nodalpulse.crawlers.ferc import (
     _normalize_docket,
 )
+from nodalpulse.crawlers.puct import (
+    FILINGS_URL as _PUCT_FILINGS_URL,
+)
+from nodalpulse.crawlers.puct import (
+    _parse_filing_results as _parse_puct_filings,
+)
 
 logger = logging.getLogger(__name__)
 
 # How far back to search when probing — wide enough to catch dormant proceedings
 _PROBE_LOOKBACK_DAYS = 365
+
+
+async def probe_puct(control_number: str) -> int:
+    """Fetch one PUCT L2 filings page for *control_number* (all-time) and return the
+    filing-item count. Single round-trip, verify=False (Interchange's cert chain is
+    broken — the crawler uses verify=False too). Returns 0 on invalid format, 0 items,
+    or any network/parse error (fail-open). This is the coverage-gap fix's validation:
+    a control number with items on Interchange but 0 in our DB was never crawled."""
+    cn = (control_number or "").strip()
+    if not cn.isdigit():
+        logger.info("probe_puct: %r → invalid (non-digit control number)", control_number)
+        return 0
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30,
+            verify=False,
+            headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
+        ) as client:
+            r = await client.get(
+                _PUCT_FILINGS_URL,
+                params={
+                    "ControlNumber": cn,
+                    "DateFiledFrom": "2000-01-01",
+                    "DateFiledTo": date.today().isoformat(),
+                    "ItemMatch": "0",
+                },
+            )
+            r.raise_for_status()
+            total = len(_parse_puct_filings(r.text, cn))
+            logger.info("probe_puct: control_number=%s → %d filing items", cn, total)
+            return total
+    except Exception:
+        logger.exception("probe_puct: unexpected error probing control_number=%s", control_number)
+        return 0
 
 
 async def probe_cpuc(proc: str) -> int:

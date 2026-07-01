@@ -13,9 +13,16 @@ async def handle_crawl_puct(payload: dict) -> dict:
     # L1 date-discovery so filings older than the daily window are reached. With an
     # explicit since + max_filings this bypasses run_adapter's short lookback cap.
     control_numbers = payload.get("control_numbers")
-    crawler = PuctCrawler(control_numbers=set(control_numbers) if control_numbers else None)
+    cn_set = set(control_numbers) if control_numbers else None
+    crawler = PuctCrawler(control_numbers=cn_set)
     result = await run_adapter(
-        crawler, "puct", payload.get("since"), max_filings=payload.get("max_filings")
+        crawler,
+        "puct",
+        payload.get("since"),
+        max_filings=payload.get("max_filings"),
+        # Stamp last_crawled_at on the targeted dockets even if they yield 0 filings,
+        # so a genuinely-empty tracked docket reads as "No filings yet" (not spinner).
+        scope_docket_refs=cn_set,
     )
     if control_numbers and result.get("saved", 0) == 0:
         logger.warning(

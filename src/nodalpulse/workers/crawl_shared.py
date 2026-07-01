@@ -10,6 +10,7 @@ from nodalpulse.db.filings import (
     get_all_tracked_docket_ids,
     get_last_crawled_at,
     get_source_id,
+    stamp_last_crawled_at,
     upsert_filing,
     upsert_filing_dockets,
 )
@@ -51,6 +52,7 @@ async def run_adapter(
     source_slug: str,
     since: str | None,
     max_filings: int | None = None,
+    scope_docket_refs: set[str] | None = None,
 ) -> dict:
     """Fetch, persist, and optionally enqueue extraction for all new filings.
 
@@ -69,6 +71,11 @@ async def run_adapter(
     max_filings: on-demand mode — cap the filings list to the N most recent after
     fetch. Also bypasses MAX_LOOKBACK_DAYS so the caller's since date is respected
     as-is (required for backfills that must reach beyond the 3-day rolling window).
+
+    scope_docket_refs: external_ids the crawl explicitly targeted (on-demand
+    control_numbers, or a watch set). Their dockets get last_crawled_at stamped even
+    with 0 results — so a genuinely-empty tracked docket reads as "No filings yet"
+    instead of a perpetual spinner on the Record page.
     """
     if max_filings is not None and since is not None:
         # On-demand: caller sets an appropriate since floor; skip the lookback cap.
@@ -109,6 +116,7 @@ async def run_adapter(
         logger.info("run_adapter selective: %d tracked dockets", len(tracked_set))
 
     saved = skipped = errors = 0
+    touched_docket_ids: set[str] = set()
     for filing in filings:
         try:
             date_parts = filing.filed_at[:10].split("-")
@@ -157,6 +165,7 @@ async def run_adapter(
                     title=filing.title if i == 0 else None,
                 )
                 docket_ids.append(created)
+            touched_docket_ids.update(docket_ids)
             docket_id = docket_ids[0] if docket_ids else None
             if len(docket_refs) > 1:
                 logger.debug(
@@ -190,5 +199,19 @@ async def run_adapter(
         except Exception:
             logger.exception("Error persisting %s filing %s", source_slug, filing.external_id)
             errors += 1
+
+    # Durable per-docket "we checked at T" signal for the Record page's warming states.
+    # Stamp touched dockets (>=1 filing) always; stamp explicitly-targeted dockets even
+    # with 0 filings so a genuinely-empty tracked docket reads as "No filings yet".
+    # Best-effort: a stamping hiccup must never fail an otherwise-successful crawl.
+    if touched_docket_ids or scope_docket_refs:
+        try:
+            await stamp_last_crawled_at(
+                touched_docket_ids,
+                source_id=source_id,
+                external_ids=scope_docket_refs,
+            )
+        except Exception:
+            logger.exception("run_adapter source=%s: last_crawled_at stamp failed", source_slug)
 
     return {"source": source_slug, "saved": saved, "skipped": skipped, "errors": errors}
