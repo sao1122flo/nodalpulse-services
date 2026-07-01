@@ -5,7 +5,14 @@ httpx from interchange.puc.texas.gov (server-rendered ASP.NET MVC,
 no JavaScript execution needed).
 """
 
+import asyncio
+import logging
+from datetime import date
+
 from nodalpulse.crawlers.puct import (
+    FILINGS_URL,
+    SEARCH_URL,
+    PuctCrawler,
     _doc_id_from_url,
     _parse_date,
     _parse_docket_results,
@@ -78,6 +85,7 @@ NBSP_FILINGS_HTML = """
 
 # ── docket results ────────────────────────────────────────────────────────────
 
+
 def test_parse_docket_results_count():
     assert len(_parse_docket_results(DOCKETS_HTML)) == 2
 
@@ -94,6 +102,7 @@ def test_parse_docket_results_empty():
 
 
 # ── filing results ────────────────────────────────────────────────────────────
+
 
 def test_parse_filing_results_count():
     assert len(_parse_filing_results(FILINGS_HTML, "56896")) == 2
@@ -134,6 +143,7 @@ def test_parse_filing_results_item_key_format():
 
 # ── document results ──────────────────────────────────────────────────────────
 
+
 def test_parse_document_results_count():
     assert len(_parse_document_results(DOCUMENTS_HTML)) == 2
 
@@ -151,12 +161,19 @@ def test_parse_document_results_empty():
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def test_doc_id_from_url_uppercase_ext():
-    assert _doc_id_from_url("https://interchange.puc.texas.gov/Documents/56896_1_1415464.PDF") == "56896_1_1415464"
+    assert (
+        _doc_id_from_url("https://interchange.puc.texas.gov/Documents/56896_1_1415464.PDF")
+        == "56896_1_1415464"
+    )
 
 
 def test_doc_id_from_url_lowercase_ext():
-    assert _doc_id_from_url("https://interchange.puc.texas.gov/Documents/56896_2_9999.pdf") == "56896_2_9999"
+    assert (
+        _doc_id_from_url("https://interchange.puc.texas.gov/Documents/56896_2_9999.pdf")
+        == "56896_2_9999"
+    )
 
 
 def test_parse_date_slash_no_padding():
@@ -174,3 +191,66 @@ def test_parse_date_iso():
 
 def test_parse_date_invalid():
     assert _parse_date("garbage") is None
+
+
+# ── on-demand control_numbers mode (coverage-bug fix) ─────────────────────────
+
+_EMPTY_FILINGS_HTML = (
+    '<html><body><table class="table"><tr><th>Item</th><th>File Stamp</th>'
+    "<th>Party</th><th>Item Type</th><th>Filing Description</th></tr></table></body></html>"
+)
+
+
+class _FakeResp:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        pass
+
+
+class _FakeClient:
+    """Records .get() calls; returns dockets HTML for L1, filings HTML for L2."""
+
+    def __init__(self, filings_html: str = FILINGS_HTML) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._filings_html = filings_html
+
+    async def get(self, url, params=None):
+        self.calls.append((url, params or {}))
+        return _FakeResp(DOCKETS_HTML if url == SEARCH_URL else self._filings_html)
+
+
+def test_control_numbers_init_normalizes():
+    c = PuctCrawler(control_numbers={" 58481 ", "58479", ""})
+    assert c._control_numbers == {"58481", "58479"}
+    assert PuctCrawler()._control_numbers == set()
+
+
+def test_control_numbers_skips_L1_and_targets_L2():
+    crawler = PuctCrawler(control_numbers={"58481"})
+    fake = _FakeClient()
+    items = asyncio.run(crawler._fetch_filing_items(fake, date(2025, 1, 1), date(2026, 7, 2)))
+    urls = [u for u, _ in fake.calls]
+    assert SEARCH_URL not in urls  # L1 date-discovery skipped
+    assert urls and all(u == FILINGS_URL for u in urls)  # only L2 calls
+    assert fake.calls[0][1]["ControlNumber"] == "58481"  # targeted the given number
+    assert len(items) == 2  # parsed from FILINGS_HTML
+
+
+def test_firehose_still_uses_L1():
+    crawler = PuctCrawler()  # no control numbers → firehose
+    fake = _FakeClient()
+    asyncio.run(crawler._fetch_filing_items(fake, date(2026, 6, 30), date(2026, 7, 2)))
+    urls = [u for u, _ in fake.calls]
+    assert urls[0] == SEARCH_URL  # L1 discovery first
+    assert FILINGS_URL in urls  # then L2 per discovered docket
+
+
+def test_on_demand_zero_result_warns(caplog):
+    crawler = PuctCrawler(control_numbers={"58481"})
+    fake = _FakeClient(filings_html=_EMPTY_FILINGS_HTML)
+    with caplog.at_level(logging.WARNING):
+        items = asyncio.run(crawler._fetch_filing_items(fake, date(2025, 1, 1), date(2026, 7, 2)))
+    assert items == []
+    assert any("returned 0 filing items" in r.message for r in caplog.records)

@@ -9,6 +9,18 @@ logger = logging.getLogger(__name__)
 
 
 async def handle_crawl_puct(payload: dict) -> dict:
-    result = await run_adapter(PuctCrawler(), "puct", payload.get("since"))
+    # On-demand backfill: payload["control_numbers"] targets specific dockets, skipping
+    # L1 date-discovery so filings older than the daily window are reached. With an
+    # explicit since + max_filings this bypasses run_adapter's short lookback cap.
+    control_numbers = payload.get("control_numbers")
+    crawler = PuctCrawler(control_numbers=set(control_numbers) if control_numbers else None)
+    result = await run_adapter(
+        crawler, "puct", payload.get("since"), max_filings=payload.get("max_filings")
+    )
+    if control_numbers and result.get("saved", 0) == 0:
+        logger.warning(
+            "PUCT on-demand crawl for %s saved 0 filings — coverage gap or invalid control numbers",
+            control_numbers,
+        )
     logger.info("PUCT crawl complete: %s", result)
     return result

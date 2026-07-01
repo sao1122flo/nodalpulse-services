@@ -61,6 +61,16 @@ _DOC_TYPE_MAP: dict[str, str] = {
 class PuctCrawler(BaseCrawler):
     source_slug = "puct"
 
+    def __init__(self, control_numbers: set[str] | None = None) -> None:
+        """Firehose by default (control_numbers=None): L1 discovers dockets by date.
+
+        On-demand (control_numbers given): skip L1 date-discovery and target those
+        control numbers directly at L2. The daily firehose only covers a narrow date
+        window, so a tracked docket whose filings predate the window is never
+        discovered — this mode backfills one arbitrary control number regardless of age.
+        """
+        self._control_numbers = {c.strip() for c in (control_numbers or set()) if c and c.strip()}
+
     async def fetch_new(self, since: str | None = None) -> list[RawFiling]:
         """Resolve doc URLs (L1–L3) and return RawFiling stubs — no content downloaded.
 
@@ -123,17 +133,29 @@ class PuctCrawler(BaseCrawler):
     async def _fetch_filing_items(
         self, client: httpx.AsyncClient, since: date, until: date
     ) -> list[dict]:
-        """L1: search → docket list. L2: per-docket filing items."""
-        resp = await client.get(
-            SEARCH_URL,
-            params={
-                "DateFiledFrom": since.isoformat(),
-                "DateFiledTo": until.isoformat(),
-            },
-        )
-        resp.raise_for_status()
-        dockets = _parse_docket_results(resp.text)
-        logger.info("PUCT: %d dockets in range", len(dockets))
+        """L1: search → docket list (firehose). L2: per-docket filing items.
+
+        On-demand (self._control_numbers set): skip L1 and use the given control
+        numbers as the docket list, so filings older than the daily window are reached.
+        """
+        if self._control_numbers:
+            control_numbers = sorted(self._control_numbers)
+            logger.info(
+                "PUCT on-demand: %d control number(s), skipping L1 date discovery (since=%s)",
+                len(control_numbers),
+                since,
+            )
+        else:
+            resp = await client.get(
+                SEARCH_URL,
+                params={
+                    "DateFiledFrom": since.isoformat(),
+                    "DateFiledTo": until.isoformat(),
+                },
+            )
+            resp.raise_for_status()
+            control_numbers = [d["control_number"] for d in _parse_docket_results(resp.text)]
+            logger.info("PUCT: %d dockets in range", len(control_numbers))
 
         sem = asyncio.Semaphore(_CONCURRENCY)
 
@@ -151,9 +173,19 @@ class PuctCrawler(BaseCrawler):
                 r.raise_for_status()
                 items = _parse_filing_results(r.text, control_number)
                 # Defensive client-side date filter in case server ignores date params
-                return [i for i in items if i["filed_at"] >= since.isoformat()]
+                kept = [i for i in items if i["filed_at"] >= since.isoformat()]
+                # Anti-silent-zero: an on-demand backfill of a specific control number that
+                # yields nothing is a red flag (coverage gap or invalid number), not routine.
+                if self._control_numbers and not kept:
+                    logger.warning(
+                        "PUCT on-demand: control number %s returned 0 filing items since %s "
+                        "— verify coverage / control number validity",
+                        control_number,
+                        since,
+                    )
+                return kept
 
-        item_lists = await asyncio.gather(*[_fetch_items(d["control_number"]) for d in dockets])
+        item_lists = await asyncio.gather(*[_fetch_items(cn) for cn in control_numbers])
         return [item for sublist in item_lists for item in sublist]
 
     async def _fetch_document_urls(
