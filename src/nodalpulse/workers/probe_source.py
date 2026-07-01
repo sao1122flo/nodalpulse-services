@@ -135,9 +135,14 @@ def _analyze(html: str) -> None:
 async def handle_probe_source(payload: dict) -> dict:
     url = payload["url"]
     method = (payload.get("method") or "GET").upper()
+    # verify=False for sources with a broken cert chain (e.g. PUCT Interchange, which
+    # the crawler also fetches with verify=False). Opt-in per probe via "insecure": true.
+    verify = not payload.get("insecure")
     headers = {"User-Agent": _UA, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"}
-    logger.info("PROBE: %s %s", method, url)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=45, headers=headers) as client:
+    logger.info("PROBE: %s %s (verify=%s)", method, url, verify)
+    async with httpx.AsyncClient(
+        follow_redirects=True, timeout=45, headers=headers, verify=verify
+    ) as client:
         try:
             if method == "POST":
                 ph = {"Origin": payload.get("origin", ""), "Referer": payload.get("referer", url)}
