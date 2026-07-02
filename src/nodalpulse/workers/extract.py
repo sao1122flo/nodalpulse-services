@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -26,6 +27,21 @@ TRIAGE_PROMPT_VER = "1.3"  # Haiku triage prompt (relevance classification only)
 PROMPT_VER = "1.6"  # Sonnet extraction: + deadline.actor, intervention.party_role, docket_linkages
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
+
+# OOM guard. Loading a very large file into memory OOM-kills the worker before any
+# except-handler runs — which the queue's retry cap can't catch (see the crash-loop
+# guard in pg_queue.dequeue). Two-layer defense:
+#   1. ZIPs are skipped up front (PUCT transmission-exhibit bundles: maps/plats/GIS,
+#      hundreds of MB, ~no extractable regulatory text — low value, high memory).
+#   2. Any source download is capped at EXTRACTION_MAX_BYTES, streamed so we never
+#      hold more than the cap in memory (protects against an unusually large PDF too;
+#      filings.byte_size is unpopulated, so the cap must be enforced at fetch time).
+# A skipped filing stays in the DB and on the Record page; it just isn't LLM-extracted.
+EXTRACTION_MAX_BYTES = int(os.environ.get("EXTRACTION_MAX_BYTES", str(40_000_000)))  # 40 MB
+
+
+class _OversizeError(Exception):
+    """A source download exceeded EXTRACTION_MAX_BYTES — skip rather than OOM the worker."""
 
 _CONTENT_TYPES: dict[str, str] = {
     "pdf": "application/pdf",
@@ -537,6 +553,16 @@ async def handle_extract(payload: dict) -> dict:
     source_slug: str = filing.get("source_slug") or ""
     source_id: str | None = filing.get("source_id")
 
+    # OOM guard (see EXTRACTION_MAX_BYTES). Skip ZIP filings before any download —
+    # they are PUCT transmission-exhibit bundles (maps/plats/GIS), hundreds of MB with
+    # ~no extractable regulatory text, and are the observed worker-crash cause.
+    if file_ext == "zip":
+        logger.warning(
+            "Filing %s skipped: file_ext=zip transmission-exhibit bundle (OOM guard, not extracted)",
+            filing_id,
+        )
+        return {"filing_id": filing_id, "skipped": True, "reason": "skipped-zip-exhibit"}
+
     import json as _json
 
     _meta: dict = _json.loads(filing.get("metadata_json") or "{}")
@@ -548,7 +574,10 @@ async def handle_extract(payload: dict) -> dict:
         content = r2.download(r2_key)
     elif source_url:
         try:
-            content = await _fetch_source_url(source_url)
+            content = await _fetch_source_url(source_url, max_bytes=EXTRACTION_MAX_BYTES)
+        except _OversizeError as exc:
+            logger.warning("Filing %s skipped: %s (OOM guard, not extracted)", filing_id, exc)
+            return {"filing_id": filing_id, "skipped": True, "reason": "skipped-oversize"}
         except Exception as exc:
             if ferc_file_id:
                 logger.warning(
@@ -699,7 +728,7 @@ async def handle_extract(payload: dict) -> dict:
 _PUCT_HOST = "interchange.puc.texas.gov"
 
 
-async def _fetch_source_url(url: str) -> bytes:
+async def _fetch_source_url(url: str, max_bytes: int | None = None) -> bytes:
     from urllib.parse import urlparse
 
     host = urlparse(url).hostname or ""
@@ -711,9 +740,21 @@ async def _fetch_source_url(url: str) -> bytes:
         verify=verify,
         headers={"User-Agent": "NodalPulse/1.0 regulatory-monitor"},
     ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.content
+        # Stream so an oversize body is aborted before it fully resides in memory — the
+        # OOM guard. filings.byte_size is unpopulated, so the true size is only known here:
+        # honour Content-Length when present, and hard-stop the byte stream regardless.
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            if max_bytes is not None:
+                clen = resp.headers.get("content-length")
+                if clen and clen.isdigit() and int(clen) > max_bytes:
+                    raise _OversizeError(f"content-length {int(clen):,} > {max_bytes:,} byte cap")
+            buf = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buf += chunk
+                if max_bytes is not None and len(buf) > max_bytes:
+                    raise _OversizeError(f"download exceeded {max_bytes:,} byte cap")
+            return bytes(buf)
 
 
 _FERC_ELIBRARY_BASE = "https://elibrary.ferc.gov"

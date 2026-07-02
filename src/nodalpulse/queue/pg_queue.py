@@ -90,6 +90,31 @@ async def enqueue_idempotent(
 
 async def dequeue(kind: str, lock_seconds: int = 900) -> dict[str, Any] | None:
     async with AsyncSessionLocal() as session:
+        # Crash-loop guard. A job that is repeatedly re-picked (status stays 'running',
+        # lock expires) without ever completing is crashing the worker before fail() can
+        # run — an OOM/SIGKILL is NOT a catchable Python exception, so the except-handler
+        # (and the max_attempts cap it enforces) never fires, and the job retries forever
+        # (observed: a 100s-of-MB PUCT exhibit ZIP hitting attempts=11 against a cap of 3).
+        # The retry cap only protects against CLEAN failures; this closes the crash-loop
+        # class by quarantining such a job once its attempts reach the cap.
+        await session.execute(
+            text(
+                """
+                UPDATE jobs SET
+                    status = 'failed',
+                    error = COALESCE(NULLIF(error, ''), '')
+                        || '[crash-loop guard: attempts>=max_attempts while running — worker likely OOM/SIGKILL before fail() ran]',
+                    locked_by = NULL,
+                    locked_until = NULL,
+                    updated_at = NOW()
+                WHERE kind = :kind
+                  AND status = 'running'
+                  AND locked_until < NOW()
+                  AND attempts >= max_attempts
+                """
+            ),
+            {"kind": kind},
+        )
         result = await session.execute(
             text(
                 """
