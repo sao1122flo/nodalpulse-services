@@ -160,12 +160,14 @@ async def _tick(now_ct: datetime) -> None:
                         idempotency_key=f"salience-PJM-{today_str}",
                         priority=8,
                     )
-                    # PJM-state PUCs (VA-SCC/vascc, MD-PSC/mdpsc, NJ-BPU/njbpu) are
-                    # crawled metadata-only and, like FERC, never extracted under
-                    # selective mode. They have 1k-7k historical filings each, so
-                    # daily runs cover only a recent window (bounds cost); the deep
-                    # historical backfill is a separate deliberate op.
-                    for _state_slug in ("vascc", "mdpsc", "njbpu"):
+                    # PJM-state PUCs (VA-SCC/vascc, NJ-BPU/njbpu) are crawled
+                    # metadata-only and, like FERC, never extracted under selective
+                    # mode. Daily runs cover only a recent window (bounds cost); the
+                    # deep historical backfill is a separate deliberate op.
+                    # mdpsc is intentionally excluded: its source_url is an HTML
+                    # viewer (maillogpdfview), not a PDF, so extraction yields
+                    # nothing — re-add it here only once that fetch is fixed.
+                    for _state_slug in ("vascc", "njbpu"):
                         await enqueue_idempotent(
                             "enqueue-source-extracts",
                             {"slug": _state_slug, "since_days": 7, "cap": 100},
