@@ -52,6 +52,7 @@ from nodalpulse.email.templates import (
     build_brief_html,
     build_brief_text,
     build_maintenance_html,
+    build_market_brief_html,
     build_quiet_day_html,
 )
 from nodalpulse.llm.client import compose as llm_compose
@@ -69,6 +70,9 @@ _CHICAGO = ZoneInfo("America/Chicago")
 BRIEF_ITEM_CAP = 25
 TOP_OF_MIND_COUNT = 5
 PER_DOCKET_CEILING = 12
+# Quiet-day fallback widens discovery lookback — the daily brief window is empty
+# by definition on a quiet day, so a same-window discovery query finds nothing.
+QUIET_DISCOVERY_LOOKBACK_DAYS = 7
 
 COMPOSER_MODEL = "claude-sonnet-4-6"
 COMPOSER_VERSION = "1.0"
@@ -621,6 +625,56 @@ async def _best_record_url(market_slug: str, brief_date: date) -> str:
     return _QD_LANDING.get(source_slug, "https://nodalpulse.com")
 
 
+# ── quiet-day market signal (never-empty fallback) ────────────────────────────
+
+
+async def _gather_quiet_signal(
+    bundle: PredicateBundle,
+    entity_patterns: list[str],
+    run_discovery: bool,
+    brief_date: date,
+    window_since: datetime,
+    *,
+    filters_active: bool,
+) -> tuple[list[dict], list[dict]]:
+    """Best-effort market-level signal for the never-empty quiet-day path.
+
+    Returns (salience_items, discovery_hits) — the same "what's driving your
+    markets" content the dashboard shows. Each query degrades to [] on failure so
+    a quiet-day email always sends. Discovery widens its lookback to
+    QUIET_DISCOVERY_LOOKBACK_DAYS because the daily brief window is, by definition,
+    empty on a quiet day.
+    """
+    salience_items: list[dict] = []
+    try:
+        sal_markets = _salience_markets_for_bundle(bundle) if filters_active else ["PUCT", "ERCOT"]
+        if sal_markets:
+            week_start = _iso_week_start(brief_date)
+            sal_all = await get_market_salience(sal_markets, week_start)
+            seen: set[str] = set()
+            for row in sal_all:
+                if row["market"] not in seen and row.get("headline"):
+                    seen.add(row["market"])
+                    salience_items.append(row)
+    except Exception:
+        logger.warning("quiet-day: salience query failed — omitting")
+
+    discovery_hits: list[dict] = []
+    if run_discovery:
+        try:
+            since = min(
+                window_since.date(),
+                brief_date - timedelta(days=QUIET_DISCOVERY_LOOKBACK_DAYS),
+            )
+            discovery_hits = await get_discovery_hits(
+                entity_patterns, since_date=since, until_date=brief_date, limit=10
+            )
+        except Exception:
+            logger.warning("quiet-day: discovery query failed — omitting")
+
+    return salience_items, discovery_hits
+
+
 # ── main handler ──────────────────────────────────────────────────────────────
 
 
@@ -707,18 +761,63 @@ async def handle_compose_brief(payload: dict) -> dict:
             logger.info("compose-brief quiet-day (zero predicate matches) user=%s", user_id)
             _primary_market = bundle.market_slugs[0] if bundle.market_slugs else "puct"
             _record_url = await _best_record_url(_primary_market, brief_date)
-            html = build_quiet_day_html(
-                brief_date=brief_date,
-                corpus_count=0,
-                app_url=settings.app_url,
-                unsubscribe_url=unsubscribe_url,
-                record_url=_record_url,
+
+            # Honest corpus count: the UNFILTERED window corpus. total_corpus above
+            # is the *filtered* count (0 on this path) — passing it as corpus_count
+            # is what produced the misleading "full corpus had 0 filings" line.
+            true_corpus = len(await get_filings_for_brief(window_since, window_until))
+
+            # Never send an empty brief: degrade to market-level signal (salience +
+            # watched-entity mentions) — the same content the dashboard surfaces.
+            salience_items, discovery_hits = await _gather_quiet_signal(
+                bundle,
+                entity_patterns,
+                _run_discovery,
+                brief_date,
+                window_since,
+                filters_active=True,
             )
-            text_body = f"Quiet day {brief_date}. 0 items match your filters. {_record_url}"
+            tracked_count = len(bundle.tracked_docket_uuids)
+
+            if salience_items or discovery_hits:
+                html = build_market_brief_html(
+                    brief_date=brief_date,
+                    app_url=settings.app_url,
+                    unsubscribe_url=unsubscribe_url,
+                    tracked_count=tracked_count,
+                    corpus_count=true_corpus,
+                    salience_items=salience_items,
+                    discovery_hits=discovery_hits,
+                    record_url=_record_url,
+                )
+                _sal_txt = "; ".join(
+                    f"{s.get('market', '')}: {s.get('headline', '')}" for s in salience_items
+                )
+                text_body = (
+                    f"Quiet in your {tracked_count} tracked matters {brief_date}. "
+                    f"Moving in your markets this week — {_sal_txt or 'see dashboard'}. {_record_url}"
+                )
+                subject = f"NodalPulse · Your markets this week · {brief_date.strftime('%b %-d')}"
+                reason = "market_signal"
+            else:
+                html = build_quiet_day_html(
+                    brief_date=brief_date,
+                    corpus_count=true_corpus,
+                    app_url=settings.app_url,
+                    unsubscribe_url=unsubscribe_url,
+                    record_url=_record_url,
+                )
+                text_body = (
+                    f"Quiet day {brief_date}. 0 items match your filters "
+                    f"({true_corpus} in the wider corpus). {_record_url}"
+                )
+                subject = f"NodalPulse · Quiet day · {brief_date.strftime('%b %-d')}"
+                reason = "no_predicate_matches"
+
             await send_email(
                 to_email=user["email"],
                 to_name=user.get("name"),
-                subject=f"NodalPulse · Quiet day · {brief_date.strftime('%b %-d')}",
+                subject=subject,
                 html_content=html,
                 text_content=text_body,
                 unsubscribe_url=unsubscribe_url,
@@ -726,8 +825,8 @@ async def handle_compose_brief(payload: dict) -> dict:
             return {
                 "user_id": user_id,
                 "status": "quiet_day",
-                "corpus_count": 0,
-                "reason": "no_predicate_matches",
+                "corpus_count": true_corpus,
+                "reason": reason,
             }
     else:
         # Global fallback — no implementable predicates (skipped onboarding or

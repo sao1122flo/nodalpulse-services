@@ -493,6 +493,90 @@ def build_quiet_day_html(
 </html>"""
 
 
+def build_market_brief_html(
+    *,
+    brief_date: date,
+    app_url: str,
+    unsubscribe_url: str,
+    tracked_count: int,
+    corpus_count: int = 0,
+    salience_items: list[dict] = (),
+    discovery_hits: list[dict] = (),
+    record_url: str = "",
+) -> str:
+    """Quiet-day email that degrades to market-level signal instead of "0 filings".
+
+    Sent when nothing new landed in the user's tracked matters but their markets
+    still have salience (or watched-entity mentions) worth surfacing — so the brief
+    is never an empty touch. corpus_count is the TRUE (unfiltered) window corpus, so
+    the "widen your filters" nudge is honest.
+    """
+    date_str = brief_date.strftime("%A, %B %-d, %Y")
+    view_url = record_url or f"{app_url}/dashboard"
+    matters_word = "matter" if tracked_count == 1 else "matters"
+
+    salience_html = _render_salience_block(list(salience_items), app_url)
+
+    discovery_html = ""
+    if discovery_hits:
+        discovery_html = (
+            '<div class="section-title">Mentions of your entities</div>\n'
+            '<div style="font-size:12px;color:#6B7280;margin:-8px 0 12px;line-height:1.5">'
+            "Surfaced because a name you watch appears in these recent filings. "
+            "Metadata only &mdash; click &ldquo;Track this&rdquo; for full analysis."
+            "</div>\n"
+        )
+        for hit in discovery_hits:
+            discovery_html += _render_discovery_hit(hit, app_url)
+
+    # Honest, actionable nudge — only when the wider corpus actually had activity.
+    corpus_line = ""
+    if corpus_count > 0:
+        filing_word = "filing" if corpus_count == 1 else "filings"
+        corpus_line = (
+            f'<p style="margin:0 0 4px;color:#71717A;font-size:13px;line-height:1.55">'
+            f"{corpus_count} {filing_word} landed in this window; none matched your tracked "
+            f"{matters_word}.&nbsp;"
+            f'<a href="{app_url}/settings" style="color:#6366F1;text-decoration:underline">'
+            f"Widen your filters &rarr;</a></p>\n"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>NodalPulse &middot; {_esc(date_str)}</title>
+  <style>{_base_styles()}</style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <a href="{app_url}" class="logo">Nodal<span class="logo-pulse">Pulse</span></a>
+      <div class="header-meta">{_esc(date_str)}</div>
+    </div>
+    <div style="padding:20px 0 8px">
+      <p style="font-size:15px;font-weight:600;color:#18181B;margin:0 0 6px">Quiet in your matters</p>
+      <p style="margin:0 0 6px;color:#71717A;font-size:14px;line-height:1.55">
+        No new filings in your {tracked_count} tracked {matters_word} today &mdash;
+        here&rsquo;s what&rsquo;s moving across your markets this week.
+      </p>
+      {corpus_line}
+    </div>
+    {salience_html}{discovery_html}
+    <div class="footer">
+      <a href="{view_url}">View filing record</a>
+      &nbsp;&middot;&nbsp;
+      <a href="{unsubscribe_url}">Unsubscribe</a>
+      &nbsp;&middot;&nbsp;
+      <a href="https://nodalpulse.com/status">Status</a>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
 def build_maintenance_html(*, brief_date: date, app_url: str, unsubscribe_url: str) -> str:
     date_str = brief_date.strftime("%A, %B %-d, %Y")
 
