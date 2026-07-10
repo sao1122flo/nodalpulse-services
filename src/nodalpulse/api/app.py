@@ -56,7 +56,9 @@ async def health() -> JSONResponse:
 
 # ── public record endpoints (no auth, 0 LLM calls, whitelisted fields only) ──
 
-_VALID_MARKETS = frozenset({"puct", "caiso", "ferc", "pjm", "ercot-nprr", "ercot-mn", "cpuc"})
+_VALID_MARKETS = frozenset(
+    {"puct", "caiso", "ferc", "pjm", "ercot-nprr", "ercot-mn", "cpuc", "vascc", "mdpsc", "njbpu"}
+)
 
 # How many extracted filings the PUBLIC (crawlable) record teaser renders. Was 3,
 # which left record pages thin — Google marked ~half "crawled, currently not
@@ -111,7 +113,7 @@ def _verify_lead_token(token: str, secret: str) -> str | None:
         return None
 
 
-_INDEX_MARKETS = ["puct", "caiso", "ferc", "pjm", "cpuc"]
+_INDEX_MARKETS = ["puct", "caiso", "ferc", "pjm", "cpuc", "vascc", "mdpsc", "njbpu"]
 
 
 @app.get("/public/record/index")

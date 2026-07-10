@@ -139,11 +139,11 @@ async def _tick(now_ct: datetime) -> None:
                     # EXTRACTION_MODE=selective, never extracted (no tracked FERC
                     # docket) — so FERC record pages would stall after the initial
                     # backfill. Enqueue extract jobs for the un-extracted FERC
-                    # backlog daily. Idempotent handler; skips extracted/pending.
+                    # backlog daily. FERC's backlog is small → no window.
                     await enqueue_idempotent(
-                        "enqueue-ferc-extracts",
-                        {},
-                        idempotency_key=f"ferc-extracts-{today_str}",
+                        "enqueue-source-extracts",
+                        {"slug": "ferc"},
+                        idempotency_key=f"src-extracts-ferc-{today_str}",
                         priority=7,
                     )
                 if caiso_active:
@@ -160,6 +160,18 @@ async def _tick(now_ct: datetime) -> None:
                         idempotency_key=f"salience-PJM-{today_str}",
                         priority=8,
                     )
+                    # PJM-state PUCs (VA-SCC/vascc, MD-PSC/mdpsc, NJ-BPU/njbpu) are
+                    # crawled metadata-only and, like FERC, never extracted under
+                    # selective mode. They have 1k-7k historical filings each, so
+                    # daily runs cover only a recent window (bounds cost); the deep
+                    # historical backfill is a separate deliberate op.
+                    for _state_slug in ("vascc", "mdpsc", "njbpu"):
+                        await enqueue_idempotent(
+                            "enqueue-source-extracts",
+                            {"slug": _state_slug, "since_days": 7, "cap": 100},
+                            idempotency_key=f"src-extracts-{_state_slug}-{today_str}",
+                            priority=7,
+                        )
 
                 logger.info(
                     "Enqueued crawls for %s (caiso=%s, pjm=%s, since=%s)",
