@@ -67,10 +67,16 @@ async def handle_enqueue_source_extracts(payload: dict) -> dict:
                   AND NOT EXISTS (
                       SELECT 1 FROM extractions e WHERE e.filing_id = f.id
                   )
+                  -- No extract job of ANY status. A filing that was processed but
+                  -- yielded no extraction (download returned non-extractable
+                  -- content — e.g. MD-PSC's maillogpdfview viewer URLs return HTML,
+                  -- not a PDF) keeps r2_key NULL and has no extraction row; matching
+                  -- only 'pending' here would re-enqueue it every single day forever.
+                  -- The queue already retries transient failures within a job's
+                  -- budget, so one terminal attempt per filing is correct.
                   AND NOT EXISTS (
                       SELECT 1 FROM jobs j
                       WHERE j.kind = 'extract'
-                        AND j.status = 'pending'
                         AND j.payload ->> 'filing_id' = f.id::text
                   )
                 ORDER BY f.filed_at DESC
