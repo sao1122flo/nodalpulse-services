@@ -58,6 +58,13 @@ async def health() -> JSONResponse:
 
 _VALID_MARKETS = frozenset({"puct", "caiso", "ferc", "pjm", "ercot-nprr", "ercot-mn", "cpuc"})
 
+# How many extracted filings the PUBLIC (crawlable) record teaser renders. Was 3,
+# which left record pages thin — Google marked ~half "crawled, currently not
+# indexed". The full list of titles/dockets/summaries is public record metadata;
+# only the structured analysis (all deadlines/parties/$) stays gated behind the
+# lead form (see /public/record/depth). Tune here.
+_TEASER_ITEM_LIMIT = 50
+
 # In-memory rate limiter for /public/lead: max 5 submissions per IP per 10 min
 _lead_ip_log: dict[str, list[float]] = defaultdict(list)
 _LEAD_RATE_LIMIT = 5
@@ -151,8 +158,8 @@ async def public_record(
 ) -> JSONResponse:
     """Teaser for a market+date record page.
 
-    Returns filing count (breadth), up to 3 headline items already extracted
-    with haiku_verdict='relevant', and total deadline count across those items.
+    Returns filing count (breadth), up to _TEASER_ITEM_LIMIT headline items already
+    extracted with haiku_verdict='relevant', and total deadline count across them.
     Safe fields only — no PII, no user tracking, no raw payload dump.
     Zero LLM calls.
     """
@@ -165,7 +172,12 @@ async def public_record(
 
     day_start = datetime.combine(record_date, datetime.min.time()).replace(tzinfo=UTC)
     day_end = day_start + timedelta(days=1)
-    params: dict = {"market": market, "day_start": day_start, "day_end": day_end}
+    params: dict = {
+        "market": market,
+        "day_start": day_start,
+        "day_end": day_end,
+        "teaser_limit": _TEASER_ITEM_LIMIT,
+    }
 
     async with AsyncSessionLocal() as session:
         count_row = await session.execute(
@@ -198,7 +210,7 @@ async def public_record(
                   AND f.filed_at < :day_end
                   AND e.haiku_verdict = 'relevant'
                 ORDER BY f.filed_at DESC
-                LIMIT 3
+                LIMIT :teaser_limit
             """),
             params,
         )
