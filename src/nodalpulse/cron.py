@@ -135,6 +135,17 @@ async def _tick(now_ct: datetime) -> None:
                         idempotency_key=f"salience-FERC-{today_str}",
                         priority=8,
                     )
+                    # FERC filings are crawled metadata-only and, under
+                    # EXTRACTION_MODE=selective, never extracted (no tracked FERC
+                    # docket) — so FERC record pages would stall after the initial
+                    # backfill. Enqueue extract jobs for the un-extracted FERC
+                    # backlog daily. Idempotent handler; skips extracted/pending.
+                    await enqueue_idempotent(
+                        "enqueue-ferc-extracts",
+                        {},
+                        idempotency_key=f"ferc-extracts-{today_str}",
+                        priority=7,
+                    )
                 if caiso_active:
                     await enqueue_idempotent(
                         "compute-market-salience",

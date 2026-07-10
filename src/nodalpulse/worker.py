@@ -18,6 +18,7 @@ from nodalpulse.workers.crawl_njbpu import handle_crawl_njbpu
 from nodalpulse.workers.crawl_pjm import handle_crawl_pjm
 from nodalpulse.workers.crawl_pjm_calendar import handle_crawl_pjm_calendar
 from nodalpulse.workers.crawl_vascc import handle_crawl_vascc
+from nodalpulse.workers.enqueue_ferc_extracts import handle_enqueue_ferc_extracts
 from nodalpulse.workers.extract import handle_extract
 from nodalpulse.workers.probe_source import handle_probe_source
 from nodalpulse.workers.refresh_extraction import handle_refresh_extraction
@@ -44,6 +45,7 @@ HANDLERS = {
     "crawl-vascc": handle_crawl_vascc,
     "crawl-pjm-calendar": handle_crawl_pjm_calendar,
     "extract": handle_extract,
+    "enqueue-ferc-extracts": handle_enqueue_ferc_extracts,
     "refresh-extraction": handle_refresh_extraction,
     "compose-brief": handle_compose_brief,
     "brief-history-export": handle_brief_history_export,
