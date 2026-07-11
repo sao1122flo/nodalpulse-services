@@ -82,6 +82,24 @@ def _check_lead_rate(ip: str) -> bool:
     return True
 
 
+# In-memory rate limiter for /public/record-request. Each call probes an external
+# source (PUCT/FERC/CPUC), so keep it tighter than the plain lead form: 4 / 10 min.
+_record_req_ip_log: dict[str, list[float]] = defaultdict(list)
+_RECORD_REQ_RATE_LIMIT = 4
+_RECORD_REQ_RATE_WINDOW = 600
+
+
+def _check_record_req_rate(ip: str) -> bool:
+    now = time.time()
+    _record_req_ip_log[ip] = [
+        t for t in _record_req_ip_log[ip] if now - t < _RECORD_REQ_RATE_WINDOW
+    ]
+    if len(_record_req_ip_log[ip]) >= _RECORD_REQ_RATE_LIMIT:
+        return False
+    _record_req_ip_log[ip].append(now)
+    return True
+
+
 def _make_lead_token(email: str, secret: str) -> str:
     """Stateless HMAC token; valid 24 h. No DB lookup needed on verify."""
     expiry = int(time.time()) + 86400
@@ -327,6 +345,102 @@ async def capture_lead(body: LeadRequest, request: Request) -> JSONResponse:
     token = _make_lead_token(email, secret)
     logger.info("lead captured: email=%s market=%s", email, body.market)
     return JSONResponse({"ok": True, "token": token})
+
+
+class RecordRequestBody(BaseModel):
+    email: str
+    market: str  # "puct" | "ferc" | "cpuc"
+    docket: str  # control number / proceeding id, e.g. "58481", "EL25-49"
+    website: str = ""  # honeypot — bots fill this; humans leave it blank
+
+
+# Markets the "check a docket" lead magnet can probe (must have a probe_* fn below).
+_RECORD_REQUEST_MARKETS = frozenset({"puct", "ferc", "cpuc"})
+_RECORD_REQUEST_LABELS = {"puct": "PUCT", "ferc": "FERC", "cpuc": "CPUC"}
+
+
+@app.post("/public/record-request")
+async def public_record_request(body: RecordRequestBody, request: Request) -> JSONResponse:
+    """Lead magnet: a visitor drops a docket number; we confirm it exists in the
+    primary source, capture the lead, and return the filing count so the site can
+    invite them into a free trial where the full Record assembles. This is the
+    product-led replacement for the retired /digest email capture.
+
+    Public (CORS-locked to nodalpulse.com). Honeypot + per-IP rate limit.
+
+    Deliberately does NOT enqueue a crawl from this anonymous endpoint: the probe
+    confirms the docket cheaply, and the billable assembly (crawl + selective
+    extraction) runs only when a signed-in user tracks the docket on trial, via the
+    existing /crawl/on-demand wiring. This keeps an unauthenticated public endpoint
+    from triggering paid-compute work.
+    """
+    if body.website:
+        # Honeypot triggered — silently succeed so bots think they won.
+        return JSONResponse({"ok": True, "found": 0, "valid": False})
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not _check_record_req_rate(client_ip):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429)
+
+    market = body.market.lower().strip()
+    docket = body.docket.strip()
+    email = body.email.lower().strip()
+
+    if market not in _RECORD_REQUEST_MARKETS:
+        return JSONResponse({"error": "unsupported_market"}, status_code=400)
+    if not docket or len(docket) > 40:
+        return JSONResponse({"error": "invalid_docket"}, status_code=400)
+    if "@" not in email or len(email) < 3:
+        return JSONResponse({"error": "invalid_email"}, status_code=400)
+
+    # Inline probe (~1–3 s) — confirm the docket has ≥1 filing in the primary source.
+    if market == "cpuc":
+        found = await probe_cpuc(docket)
+    elif market == "puct":
+        found = await probe_puct(docket)
+    else:  # ferc
+        found = await probe_ferc(docket)
+
+    if not found:
+        logger.info("record-request: not found market=%s docket=%s", market, docket)
+        return JSONResponse({"found": 0, "valid": False})
+
+    # Capture the lead + which docket they asked about. This magnet is
+    # intentionally low-friction (docket + email only), but leads.name/title are
+    # NOT NULL, so we write self-labeling placeholders: name marks the capture
+    # channel and title carries the requested docket for the admin list;
+    # source_url holds the machine-readable ref. Upsert by email, and on conflict
+    # update ONLY market + source_url so a richer name/title captured via the
+    # record-page gate is never clobbered.
+    label = _RECORD_REQUEST_LABELS[market]
+    docket_ref = f"docket-request:{market}:{docket}"
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text("""
+                INSERT INTO leads (email, name, title, market, source_url)
+                VALUES (:email, :name, :title, :market, :source_url)
+                ON CONFLICT (email) DO UPDATE
+                    SET market     = COALESCE(EXCLUDED.market, leads.market),
+                        source_url = EXCLUDED.source_url
+            """),
+            {
+                "email": email,
+                "name": "Docket-check lead",
+                "title": f"{label} {docket}",
+                "market": label,
+                "source_url": docket_ref,
+            },
+        )
+        await session.commit()
+
+    logger.info(
+        "record-request captured: email=%s market=%s docket=%s found=%d",
+        email,
+        market,
+        docket,
+        found,
+    )
+    return JSONResponse({"found": found, "valid": True, "market": market, "docket": docket})
 
 
 @app.get("/public/record/depth")
