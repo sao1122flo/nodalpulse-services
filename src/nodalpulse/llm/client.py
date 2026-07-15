@@ -98,6 +98,20 @@ def _fire_and_forget(coro) -> None:
 # ── observability insert ──────────────────────────────────────────────────────
 
 
+def _source_for_stage(pipeline_stage: str) -> str:
+    """WS-B (B4): coarse cost-attribution source, derived from pipeline_stage.
+
+    'app' = in-app Q&A, 'connector' = MCP ask_the_record, 'pipeline' = everything
+    else (extraction / brief / discovery / salience). pipeline_stage is kept for the
+    finer-grained view; `source` is what the monthly AI-quota + billing reports read.
+    """
+    if pipeline_stage == "connector":
+        return "connector"
+    if pipeline_stage == "qna":
+        return "app"
+    return "pipeline"
+
+
 async def _persist_llm_call(
     *,
     response,
@@ -128,14 +142,14 @@ async def _persist_llm_call(
             await session.execute(
                 text("""
                     INSERT INTO llm_calls (
-                        model, pipeline_stage,
+                        model, pipeline_stage, source,
                         input_tokens, output_tokens,
                         cache_read_input_tokens, cache_creation_input_tokens,
                         cost_usd_estimate, pricing_version,
                         latency_ms, request_id, prompt_version, environment,
                         filing_id, user_id, brief_id, error
                     ) VALUES (
-                        :model, :pipeline_stage,
+                        :model, :pipeline_stage, :source,
                         :input_tokens, :output_tokens,
                         :cache_read_input_tokens, :cache_creation_input_tokens,
                         :cost_usd_estimate, :pricing_version,
@@ -147,6 +161,7 @@ async def _persist_llm_call(
                 {
                     "model": model,
                     "pipeline_stage": pipeline_stage,
+                    "source": _source_for_stage(pipeline_stage),
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "cache_read_input_tokens": cache_read,
