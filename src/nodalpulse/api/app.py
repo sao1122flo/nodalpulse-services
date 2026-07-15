@@ -1128,14 +1128,16 @@ async def connector_ask(body: ConnectorAskRequest) -> JSONResponse:
 
 @app.get("/qna/usage", dependencies=[Depends(verify_bearer)])
 async def qna_usage(user_id: str) -> JSONResponse:
-    """Return today's Q&A question count for a user (America/Chicago day window)."""
+    """Return this month's AI-action count for a user (America/Chicago month window),
+    shared across app Q&A + connector. WS-B: monthly, source-based. The `used_today`
+    field name is kept for web compatibility but now carries the month-to-date count."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
                 SELECT COUNT(*) FROM llm_calls
-                WHERE pipeline_stage = 'qna'
+                WHERE source IN ('app', 'connector')
                   AND user_id = CAST(:uid AS uuid)
-                  AND created_at >= date_trunc('day', now() AT TIME ZONE 'America/Chicago')
+                  AND created_at >= date_trunc('month', now() AT TIME ZONE 'America/Chicago')
                     AT TIME ZONE 'America/Chicago'
             """),
             {"uid": user_id},

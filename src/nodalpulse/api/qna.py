@@ -127,42 +127,42 @@ def _build_filing_context(filings: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def _get_qna_usage_today(user_id: str) -> int:
-    """Count Q&A calls today in America/Chicago time."""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            text("""
-                SELECT COUNT(*) FROM llm_calls
-                WHERE pipeline_stage = 'qna'
-                  AND user_id = CAST(:uid AS uuid)
-                  AND created_at >= date_trunc('day', now() AT TIME ZONE 'America/Chicago')
-                    AT TIME ZONE 'America/Chicago'
-            """),
-            {"uid": user_id},
-        )
-        return int(result.scalar_one())
+async def _get_ai_usage_this_month(user_id: str) -> int:
+    """Count AI-answer actions this calendar month (America/Chicago) across BOTH the
+    app (source='app') and the connector (source='connector').
 
-
-async def _get_ai_usage_today(user_id: str) -> int:
-    """Count AI-answer calls today across BOTH the app (qna) and the connector.
-
-    WS-D interim: the connector's ask_the_record shares the same daily AI quota as
-    the in-app Q&A (the decided pricing principle — ask via app or via Claude, both
-    draw from one quota). WS-B replaces this daily count with a monthly window + a
-    real `source` column; until then the connector meters against this shared count.
+    WS-B: the AI quota is monthly and shared — asking via the app or via Claude both
+    draw from one pool (the decided pricing principle). Reads the `source` column
+    (B4); pipeline_stage-derived, so app Q&A + connector ask_the_record both count,
+    while pipeline extraction/brief calls (source='pipeline') never do.
     """
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             text("""
                 SELECT COUNT(*) FROM llm_calls
-                WHERE pipeline_stage IN ('qna', 'connector')
+                WHERE source IN ('app', 'connector')
                   AND user_id = CAST(:uid AS uuid)
-                  AND created_at >= date_trunc('day', now() AT TIME ZONE 'America/Chicago')
+                  AND created_at >= date_trunc('month', now() AT TIME ZONE 'America/Chicago')
                     AT TIME ZONE 'America/Chicago'
             """),
             {"uid": user_id},
         )
         return int(result.scalar_one())
+
+
+def _next_month_reset_iso() -> str:
+    """First instant of next month in America/Chicago, as a UTC ISO string."""
+    from zoneinfo import ZoneInfo
+
+    ct = ZoneInfo("America/Chicago")
+    now_ct = datetime.now(ct)
+    year, month = now_ct.year, now_ct.month
+    nxt = now_ct.replace(
+        year=year + 1 if month == 12 else year,
+        month=1 if month == 12 else month + 1,
+        day=1, hour=0, minute=0, second=0, microsecond=0,
+    )
+    return nxt.astimezone(UTC).isoformat()
 
 
 async def handle_qna(body: QnaRequest) -> JSONResponse:
@@ -178,25 +178,17 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
             status_code=403,
         )
 
-    # ── Daily rate limit ──────────────────────────────────────────────────────
-    used_today = await _get_qna_usage_today(body.user_id)
+    # ── Monthly AI-action quota (shared: app + connector) ─────────────────────
+    # body.limit_per_day is the legacy wire field name; under WS-B it carries the
+    # MONTHLY cap (the web layer passes getEntitlements.aiActions.perMonth).
+    used_today = await _get_ai_usage_this_month(body.user_id)
     if used_today >= body.limit_per_day:
-        # Compute next CT midnight in UTC
-        from zoneinfo import ZoneInfo
-
-        ct = ZoneInfo("America/Chicago")
-        now_ct = datetime.now(ct)
-        next_midnight_ct = (now_ct + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        resets_at = next_midnight_ct.astimezone(UTC).isoformat()
-
         return JSONResponse(
             {
                 "error": "rate_limit",
                 "limit": body.limit_per_day,
                 "used": used_today,
-                "resets_at": resets_at,
+                "resets_at": _next_month_reset_iso(),
             },
             status_code=429,
         )
@@ -481,23 +473,15 @@ async def handle_connector_ask(body: ConnectorAskRequest) -> JSONResponse:
             status_code=403,
         )
 
-    # ── Shared daily AI quota (app Q&A + connector) ──────────────────────────────
-    used_today = await _get_ai_usage_today(body.user_id)
+    # ── Shared monthly AI quota (app Q&A + connector) ────────────────────────────
+    used_today = await _get_ai_usage_this_month(body.user_id)
     if used_today >= body.limit_per_day:
-        from zoneinfo import ZoneInfo
-
-        ct = ZoneInfo("America/Chicago")
-        now_ct = datetime.now(ct)
-        next_midnight_ct = (now_ct + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        resets_at = next_midnight_ct.astimezone(UTC).isoformat()
         return JSONResponse(
             {
                 "error": "rate_limit",
                 "limit": body.limit_per_day,
                 "used": used_today,
-                "resets_at": resets_at,
+                "resets_at": _next_month_reset_iso(),
             },
             status_code=429,
         )
