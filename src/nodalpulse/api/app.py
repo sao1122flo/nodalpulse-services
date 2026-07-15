@@ -21,7 +21,12 @@ from sqlalchemy import text
 
 from nodalpulse.api.auth import verify_bearer
 from nodalpulse.api.crawl_probes import probe_cpuc, probe_ferc, probe_puct
-from nodalpulse.api.qna import QnaRequest, handle_qna
+from nodalpulse.api.qna import (
+    ConnectorAskRequest,
+    QnaRequest,
+    handle_connector_ask,
+    handle_qna,
+)
 from nodalpulse.db.briefs import get_active_user_ids, get_already_enqueued_for_date, get_user_exists
 from nodalpulse.db.engine import AsyncSessionLocal
 from nodalpulse.db.extractions import get_filing
@@ -1105,6 +1110,17 @@ async def qna(body: QnaRequest) -> JSONResponse:
     payload only — no R2 text retrieval (V1).
     """
     return await handle_qna(body)
+
+
+@app.post("/connector/ask", dependencies=[Depends(verify_bearer)])
+async def connector_ask(body: ConnectorAskRequest) -> JSONResponse:
+    """ask_the_record for the MCP connector — grounded on ONE tracked docket.
+
+    v1 scope: structured extraction summaries only, last 30 days, up to 15 filings
+    (not full text — that's Ask-the-Record v2). Metered against the shared daily AI
+    quota (limit_per_day from web entitlements) and tagged pipeline_stage='connector'.
+    """
+    return await handle_connector_ask(body)
 
 
 # ── Q&A usage ─────────────────────────────────────────────────────────────────

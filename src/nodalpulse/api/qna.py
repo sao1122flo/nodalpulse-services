@@ -143,6 +143,28 @@ async def _get_qna_usage_today(user_id: str) -> int:
         return int(result.scalar_one())
 
 
+async def _get_ai_usage_today(user_id: str) -> int:
+    """Count AI-answer calls today across BOTH the app (qna) and the connector.
+
+    WS-D interim: the connector's ask_the_record shares the same daily AI quota as
+    the in-app Q&A (the decided pricing principle — ask via app or via Claude, both
+    draw from one quota). WS-B replaces this daily count with a monthly window + a
+    real `source` column; until then the connector meters against this shared count.
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text("""
+                SELECT COUNT(*) FROM llm_calls
+                WHERE pipeline_stage IN ('qna', 'connector')
+                  AND user_id = CAST(:uid AS uuid)
+                  AND created_at >= date_trunc('day', now() AT TIME ZONE 'America/Chicago')
+                    AT TIME ZONE 'America/Chicago'
+            """),
+            {"uid": user_id},
+        )
+        return int(result.scalar_one())
+
+
 async def handle_qna(body: QnaRequest) -> JSONResponse:
     """Core Q&A handler — called from the FastAPI route."""
     # ── Entitlement gate ──────────────────────────────────────────────────────
@@ -421,6 +443,220 @@ async def handle_qna(body: QnaRequest) -> JSONResponse:
                 "cache_read": getattr(u, "cache_read_input_tokens", 0),
                 "cache_creation": getattr(u, "cache_creation_input_tokens", 0),
             },
+            "cost_estimate": float(cost),
+            "used_today": used_today + 1,
+            "limit_per_day": body.limit_per_day,
+        }
+    )
+
+
+# ── WS-D: connector ask_the_record (docket-scoped) ────────────────────────────
+
+
+class ConnectorAskRequest(BaseModel):
+    user_id: str
+    docket_id: str  # docket UUID (resolved + tracked-gated by the web layer)
+    question: str
+    limit_per_day: int = 0  # 0 = blocked; passed by web from getEntitlements.qa
+
+
+async def handle_connector_ask(body: ConnectorAskRequest) -> JSONResponse:
+    """ask_the_record for the MCP connector — grounded on ONE docket the user tracks.
+
+    Same v1 scope as /qna (structured extraction summaries only, last 30 days, up to
+    15 filings — NOT full document text; that's Ask-the-Record v2). Differs from /qna
+    in three ways: retrieval is scoped to a single docket (not the predicate bundle),
+    the user must TRACK that docket, and the metered call is tagged
+    pipeline_stage='connector' for cost attribution while still counting against the
+    shared daily AI quota.
+    """
+    # ── Entitlement gate (Free = 0 → blocked; a launch feature, not a demo one) ──
+    if body.limit_per_day == 0:
+        return JSONResponse(
+            {
+                "error": "qa_not_available",
+                "message": "Ask the Record isn't available on your current plan.",
+                "upgrade_url": "/pricing",
+            },
+            status_code=403,
+        )
+
+    # ── Shared daily AI quota (app Q&A + connector) ──────────────────────────────
+    used_today = await _get_ai_usage_today(body.user_id)
+    if used_today >= body.limit_per_day:
+        from zoneinfo import ZoneInfo
+
+        ct = ZoneInfo("America/Chicago")
+        now_ct = datetime.now(ct)
+        next_midnight_ct = (now_ct + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        resets_at = next_midnight_ct.astimezone(UTC).isoformat()
+        return JSONResponse(
+            {
+                "error": "rate_limit",
+                "limit": body.limit_per_day,
+                "used": used_today,
+                "resets_at": resets_at,
+            },
+            status_code=429,
+        )
+
+    # ── Enforce the user tracks this docket (defense in depth; web also gates) ───
+    async with AsyncSessionLocal() as session:
+        tracked = await session.execute(
+            text("""
+                SELECT 1 FROM user_dockets
+                WHERE user_id = CAST(:uid AS uuid) AND docket_id = CAST(:did AS uuid)
+                LIMIT 1
+            """),
+            {"uid": body.user_id, "did": body.docket_id},
+        )
+        if tracked.first() is None:
+            return JSONResponse(
+                {
+                    "error": "not_tracked",
+                    "message": "Ask the Record only answers over dockets you track. Track this one first.",
+                },
+                status_code=403,
+            )
+
+    # ── Retrieve candidate filings for THIS docket (single-docket branch) ────────
+    since = datetime.now(UTC) - timedelta(days=30)
+    sql_query = """
+        SELECT
+            f.id::text      AS filing_id,
+            f.title,
+            f.filer,
+            f.filed_at,
+            f.source_url,
+            s.slug          AS source_slug,
+            d.external_id   AS docket_number,
+            e.payload
+        FROM filings f
+        JOIN sources s ON s.id = f.source_id
+        LEFT JOIN dockets d ON d.id = f.docket_id
+        LEFT JOIN extractions e ON e.filing_id = f.id
+        WHERE f.docket_id = CAST(:docket_id AS uuid)
+          AND f.created_at >= :since
+          AND e.haiku_verdict IS DISTINCT FROM 'irrelevant'
+        ORDER BY f.filed_at DESC
+        LIMIT :limit
+    """
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            text(sql_query),
+            {"docket_id": body.docket_id, "since": since, "limit": _QNA_MAX_FILINGS},
+        )
+        rows = result.mappings().fetchall()
+
+    if not rows:
+        # No LLM call → not metered. Honest empty answer (200) reads cleanly in Claude.
+        return JSONResponse(
+            {
+                "answer": (
+                    "I don't see recent extracted filings (last 30 days) for this docket "
+                    "in your Record to answer from."
+                ),
+                "citations": [],
+                "no_context": True,
+                "used_today": used_today,
+                "limit_per_day": body.limit_per_day,
+            }
+        )
+
+    filings = [
+        {
+            "filing_id": r["filing_id"],
+            "title": r["title"],
+            "filer": r["filer"],
+            "filed_at": r["filed_at"].isoformat()[:10] if r["filed_at"] else None,
+            "source_url": r["source_url"],
+            "source_slug": r["source_slug"],
+            "docket_number": r["docket_number"],
+            "payload": r["payload"] or {},
+        }
+        for r in rows
+    ]
+    filing_index = {f["filing_id"]: f for f in filings}
+
+    conversation_id = str(uuid.uuid4())
+    filing_context = _build_filing_context(filings)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": filing_context, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": f"Question: {body.question}"},
+            ],
+        }
+    ]
+
+    # ── LLM call — tagged 'connector' for cost attribution ───────────────────────
+    response = await tracked_messages_create(
+        pipeline_stage="connector",
+        user_id=body.user_id,
+        prompt_version=_QNA_PROMPT_VERSION,
+        model=_QNA_MODEL,
+        max_tokens=_QNA_MAX_TOKENS,
+        system=[{"type": "text", "text": _QNA_SYSTEM}],
+        messages=messages,
+        tools=[_QNA_TOOL],
+        tool_choice={"type": "tool", "name": "answer_question"},
+    )
+
+    answer = ""
+    raw_citations: list[dict] = []
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "answer_question":
+            answer = block.input.get("answer", "")
+            raw_citations = block.input.get("citations", [])
+            break
+    if not answer:
+        answer = "Unable to generate an answer. Please try again."
+
+    cost = compute_cost(response.usage, _QNA_MODEL)
+    if float(cost) > _QNA_COST_WARN_THRESHOLD:
+        logger.warning(
+            "connector_ask cost_warn user=%s docket=%s cost=%.4f",
+            body.user_id,
+            body.docket_id,
+            float(cost),
+        )
+
+    citations = []
+    for c in raw_citations:
+        fid = c.get("filing_id", "")
+        f = filing_index.get(fid)
+        if not f:
+            continue
+        citations.append(
+            {
+                "filing_id": fid,
+                "title": f["title"],
+                "source_url": f["source_url"],
+                "docket_number": f["docket_number"],
+                "relevance_note": c.get("relevance_note", ""),
+                "snippet": c.get("snippet") or None,
+                "page_number": c.get("page_number") or None,
+            }
+        )
+
+    u = response.usage
+    logger.info(
+        "connector_ask user=%s docket=%s in=%d out=%d cost=%.4f",
+        body.user_id,
+        body.docket_id,
+        u.input_tokens,
+        u.output_tokens,
+        float(cost),
+    )
+
+    return JSONResponse(
+        {
+            "answer": answer,
+            "citations": citations,
+            "conversation_id": conversation_id,
             "cost_estimate": float(cost),
             "used_today": used_today + 1,
             "limit_per_day": body.limit_per_day,
